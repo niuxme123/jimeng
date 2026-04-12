@@ -1,7 +1,7 @@
 {
   "name": "jimeng-automation",
-  "version": "1.0.0",
-  "description": "即梦AI自动化工具 - 自动登录、提交任务、拦截视频",
+  "version": "1.1.0",
+  "description": "即梦AI自动化工具 - 自动登录、提交任务、拦截视频、无水印下载",
   "main": "main.js",
   "scripts": {
     "start": "electron .",

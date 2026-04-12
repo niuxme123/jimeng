@@ -45,7 +45,8 @@ function createMainWindow(Menu) {
     });
 
     mainWindow.loadFile(path.join(__dirname, '..', 'index.html'));
-    mainWindow.webContents.openDevTools();
+    // 不自动打开开发者工具
+    // mainWindow.webContents.openDevTools();
 
     mainWindow.on('closed', () => {
         mainWindow = null;
@@ -106,7 +107,8 @@ function createJimengWindow() {
     });
 
     jimengWindow.loadURL(config.currentVersion === 'cn' ? config.targetUrlCN : config.targetUrlIntl);
-    jimengWindow.webContents.openDevTools();
+    // 不自动打开开发者工具
+    // jimengWindow.webContents.openDevTools();
 
     // 设置请求拦截
     setupRequestInterceptor(jimengWindow.webContents);
@@ -211,12 +213,23 @@ function setupRequestInterceptor(webContents) {
         (details) => {
             log.info('拦截到视频请求:', details.url);
 
+            // 检查是否是无水印视频（通常在 URL 中包含特定标识）
+            const url = details.url;
+            const isWatermarkFree = url.includes('watermark=0') ||
+                                    url.includes('no_watermark') ||
+                                    url.includes('no-watermark') ||
+                                    url.includes('origin') ||
+                                    url.includes('raw') ||
+                                    !url.includes('watermark');
+
             const videoInfo = {
                 url: details.url,
                 method: details.method,
                 timestamp: new Date().toISOString(),
                 resourceType: details.resourceType,
-                status: details.statusCode
+                status: details.statusCode,
+                isWatermarkFree: isWatermarkFree,
+                source: 'network-request'
             };
 
             if (onVideoIntercepted) {
@@ -229,17 +242,44 @@ function setupRequestInterceptor(webContents) {
         }
     );
 
-    // 监听 API 响应
+    // 监听 API 响应 - 捕获视频生成结果
+    webContents.session.webRequest.onBeforeRequest(
+        { urls: [
+            '*://*/*generate*',
+            '*://*/*create*',
+            '*://*/*task*',
+            '*://*/api/*',
+            '*://*/*submit*',
+            '*://*/*result*',
+            '*://*/*video*'
+        ]},
+        (details, callback) => {
+            // 对于 POST 请求，记录请求体
+            if (details.method === 'POST' && details.uploadData) {
+                log.info('API POST 请求:', details.url);
+            }
+            callback({});
+        }
+    );
+
+    // 监听 API 响应完成
     webContents.session.webRequest.onCompleted(
         { urls: [
             '*://*/*generate*',
             '*://*/*create*',
             '*://*/*task*',
             '*://*/api/*',
-            '*://*/*submit*'
+            '*://*/*submit*',
+            '*://*/*result*'
         ]},
         (details) => {
-            log.info('API请求完成:', details.url);
+            log.info('API请求完成:', details.url, '状态:', details.statusCode);
+
+            // 如果是成功的响应，尝试从页面中提取视频信息
+            if (details.statusCode === 200) {
+                extractVideoInfoFromPage(webContents);
+            }
+
             if (mainWindow) {
                 mainWindow.webContents.send('api-response', {
                     url: details.url,
@@ -256,10 +296,218 @@ function setupRequestInterceptor(webContents) {
             const contentType = details.responseHeaders?.['content-type']?.[0] || '';
             if (contentType.includes('video') || contentType.includes('mp4')) {
                 log.info('检测到视频响应:', details.url, contentType);
+
+                // 提取视频 URL 的关键信息
+                const videoInfo = {
+                    url: details.url,
+                    contentType: contentType,
+                    timestamp: new Date().toISOString()
+                };
+
+                if (mainWindow) {
+                    mainWindow.webContents.send('video-intercepted', videoInfo);
+                }
             }
             callback({});
         }
     );
+}
+
+/**
+ * 从页面中提取视频信息
+ * 支持多种视频源提取方式
+ */
+async function extractVideoInfoFromPage(webContents) {
+    try {
+        const script = `
+            (function() {
+                const videos = [];
+
+                // 1. 查找所有 video 元素
+                const videoElements = document.querySelectorAll('video');
+                videoElements.forEach((video, index) => {
+                    if (video.src && !video.src.startsWith('blob:')) {
+                        videos.push({
+                            type: 'video-src',
+                            url: video.src,
+                            index: index,
+                            poster: video.poster || null
+                        });
+                    }
+                    // 查找 source 子元素
+                    const sources = video.querySelectorAll('source');
+                    sources.forEach((source, sIndex) => {
+                        if (source.src && !source.src.startsWith('blob:')) {
+                            videos.push({
+                                type: 'video-source',
+                                url: source.src,
+                                videoIndex: index,
+                                sourceIndex: sIndex
+                            });
+                        }
+                    });
+                });
+
+                // 2. 查找 iframe 中的视频（可能跨域，不一定能访问）
+                try {
+                    const iframes = document.querySelectorAll('iframe');
+                    iframes.forEach((iframe, iIndex) => {
+                        try {
+                            const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                            const iframeVideos = iframeDoc.querySelectorAll('video');
+                            iframeVideos.forEach((v, vIndex) => {
+                                if (v.src && !v.src.startsWith('blob:')) {
+                                    videos.push({
+                                        type: 'iframe-video',
+                                        url: v.src,
+                                        iframeIndex: iIndex,
+                                        videoIndex: vIndex
+                                    });
+                                }
+                            });
+                        } catch (e) {
+                            // 跨域 iframe，无法访问
+                        }
+                    });
+                } catch (e) {}
+
+                // 3. 查找页面 JS 中的视频 URL（通过全局变量或 window 对象）
+                try {
+                    // 检查常见的视频播放器对象
+                    const playerVars = ['player', 'videoPlayer', '__INITIAL_STATE__', '__NUXT__', 'videoData', 'playInfo'];
+                    playerVars.forEach(varName => {
+                        try {
+                            const data = window[varName];
+                            if (data) {
+                                const str = JSON.stringify(data);
+                                // 匹配 .mp4 或 .webm URL
+                                const matches = str.match(/(https?:\\/\\/[^"\\s]+\\.(?:mp4|webm)(?:\\?[^"\\s]*)?)/gi);
+                                if (matches) {
+                                    matches.forEach(url => {
+                                        videos.push({
+                                            type: 'js-variable',
+                                            url: url.replace(/\\\\u002F/g, '/').replace(/\\\\/g, ''),
+                                            source: varName
+                                        });
+                                    });
+                                }
+                            }
+                        } catch (e) {}
+                    });
+                } catch (e) {}
+
+                // 4. 查找页面 HTML 中内嵌的视频 URL
+                try {
+                    const htmlContent = document.documentElement.outerHTML;
+                    const urlMatches = htmlContent.match(/(https?:\\/\\/[^"\\s<>]+\\.(?:mp4|webm)(?:\\?[^"\\s<>]*)?)/gi);
+                    if (urlMatches) {
+                        urlMatches.forEach(url => {
+                            const cleanUrl = url.replace(/&amp;/g, '&');
+                            if (!videos.some(v => v.url === cleanUrl)) {
+                                videos.push({
+                                    type: 'html-embedded',
+                                    url: cleanUrl
+                                });
+                            }
+                        });
+                    }
+                } catch (e) {}
+
+                // 5. 查找 aria-label 或 data 属性中的视频 URL
+                try {
+                    const elementsWithDataUrl = document.querySelectorAll('[data-url*=".mp4"], [data-src*=".mp4"], [data-video*="http"]');
+                    elementsWithDataUrl.forEach((el, index) => {
+                        const url = el.dataset.url || el.dataset.src || el.dataset.video;
+                        if (url && (url.includes('.mp4') || url.includes('.webm'))) {
+                            videos.push({
+                                type: 'data-attribute',
+                                url: url,
+                                element: el.tagName
+                            });
+                        }
+                    });
+                } catch (e) {}
+
+                // 6. 检查 XHR/Fetch 响应中缓存的数据
+                try {
+                    // 某些网站会在 localStorage 或 sessionStorage 中缓存视频信息
+                    ['localStorage', 'sessionStorage'].forEach(storage => {
+                        try {
+                            for (let i = 0; i < window[storage].length; i++) {
+                                const key = window[storage].key(i);
+                                const value = window[storage].getItem(key);
+                                if (value && (value.includes('.mp4') || value.includes('.webm'))) {
+                                    const matches = value.match(/(https?:\\/\\/[^"\\s]+\\.(?:mp4|webm)(?:\\?[^"\\s]*)?)/gi);
+                                    if (matches) {
+                                        matches.forEach(url => {
+                                            const cleanUrl = url.replace(/\\\\u002F/g, '/').replace(/\\\\/g, '').replace(/\\\\"/g, '"');
+                                            if (!videos.some(v => v.url === cleanUrl)) {
+                                                videos.push({
+                                                    type: 'storage-cache',
+                                                    url: cleanUrl,
+                                                    source: storage + ':' + key
+                                                });
+                                            }
+                                        });
+                                    }
+                                }
+                            }
+                        } catch (e) {}
+                    });
+                } catch (e) {}
+
+                // 去重
+                const uniqueVideos = [];
+                const seenUrls = new Set();
+                videos.forEach(v => {
+                    if (!seenUrls.has(v.url)) {
+                        seenUrls.add(v.url);
+                        uniqueVideos.push(v);
+                    }
+                });
+
+                return uniqueVideos;
+            })();
+        `;
+
+        const videos = await webContents.executeJavaScript(script);
+        if (videos && videos.length > 0) {
+            log.info('从页面提取到视频:', videos);
+
+            // 分析视频 URL，判断是否无水印
+            const processedVideos = videos.map(video => {
+                const url = video.url;
+                // 判断无水印视频的特征
+                const isWatermarkFree = url.includes('watermark=0') ||
+                                        url.includes('no_watermark') ||
+                                        url.includes('no-watermark') ||
+                                        url.includes('origin') ||
+                                        url.includes('raw') ||
+                                        url.includes('hd') ||
+                                        url.includes('source') ||
+                                        (!url.includes('watermark') && !url.includes('wm_'));
+
+                return {
+                    ...video,
+                    timestamp: new Date().toISOString(),
+                    source: video.type || 'page-extract',
+                    isWatermarkFree: isWatermarkFree
+                };
+            });
+
+            processedVideos.forEach(video => {
+                if (mainWindow) {
+                    mainWindow.webContents.send('video-intercepted', video);
+                }
+            });
+
+            return processedVideos;
+        }
+        return [];
+    } catch (error) {
+        log.error('提取页面视频失败:', error);
+        return [];
+    }
 }
 
 /**
@@ -1762,6 +2010,41 @@ function closeJimengWindow() {
     }
 }
 
+/**
+ * 手动提取当前页面的所有视频链接
+ * 用于在生成视频后获取下载地址
+ */
+async function extractVideos() {
+    if (!jimengWindow || jimengWindow.isDestroyed()) {
+        return { success: false, error: '请先打开即梦窗口', videos: [] };
+    }
+
+    log.info('手动提取视频链接...');
+
+    try {
+        const videos = await extractVideoInfoFromPage(jimengWindow.webContents);
+
+        if (videos.length > 0) {
+            log.info(`提取到 ${videos.length} 个视频链接`);
+
+            // 同时发送到主窗口
+            videos.forEach(video => {
+                if (mainWindow) {
+                    mainWindow.webContents.send('video-intercepted', video);
+                }
+            });
+
+            return { success: true, count: videos.length, videos };
+        } else {
+            log.info('未找到视频链接');
+            return { success: true, count: 0, videos: [], message: '未找到视频链接，请确保视频已生成完成' };
+        }
+    } catch (error) {
+        log.error('提取视频失败:', error);
+        return { success: false, error: error.message, videos: [] };
+    }
+}
+
 module.exports = {
     createMainWindow,
     createJimengWindow,
@@ -1776,5 +2059,6 @@ module.exports = {
     setDefaultGenerateParams,
     setVideoInterceptedCallback,
     setApiResponseCallback,
-    uploadMaterials
+    uploadMaterials,
+    extractVideos
 };

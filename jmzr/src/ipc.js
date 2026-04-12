@@ -114,6 +114,11 @@ function registerIpcHandlers() {
         return await windows.analyzePageStructure();
     });
 
+    // 提取视频链接
+    ipcMain.handle('extract-videos', async () => {
+        return await windows.extractVideos();
+    });
+
     // 邮箱密码登录
     ipcMain.handle('login-with-email', async (event, { email, password }) => {
         return await windows.loginWithEmail(email, password);

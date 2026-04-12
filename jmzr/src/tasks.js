@@ -101,6 +101,7 @@ async function submitVideoTask(taskData) {
 
 /**
  * 下载视频
+ * 支持重定向和多种 URL 格式
  */
 async function downloadVideo(videoUrl, filename, downloadDir) {
     const fs = require('fs');
@@ -108,23 +109,65 @@ async function downloadVideo(videoUrl, filename, downloadDir) {
     const https = require('https');
     const path = require('path');
 
+    // 确保 URL 是完整的
+    if (!videoUrl.startsWith('http://') && !videoUrl.startsWith('https://')) {
+        videoUrl = 'https:' + videoUrl;
+    }
+
     const filePath = path.join(downloadDir, filename);
-    const file = fs.createWriteStream(filePath);
 
     return new Promise((resolve, reject) => {
         const protocol = videoUrl.startsWith('https') ? https : http;
 
-        protocol.get(videoUrl, (response) => {
+        const request = protocol.get(videoUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': '*/*',
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'Referer': videoUrl
+            }
+        }, (response) => {
+            // 处理重定向
+            if (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 303 || response.statusCode === 307 || response.statusCode === 308) {
+                const redirectUrl = response.headers.location;
+                if (redirectUrl) {
+                    log.info('视频重定向到:', redirectUrl);
+                    downloadVideo(redirectUrl, filename, downloadDir).then(resolve).catch(reject);
+                    return;
+                }
+            }
+
+            if (response.statusCode !== 200) {
+                reject(new Error(`HTTP ${response.statusCode}: ${response.statusMessage}`));
+                return;
+            }
+
+            const file = fs.createWriteStream(filePath);
             response.pipe(file);
+
             file.on('finish', () => {
                 file.close();
                 log.info('视频下载完成:', filePath);
                 resolve({ success: true, path: filePath });
             });
-        }).on('error', (err) => {
+
+            file.on('error', (err) => {
+                fs.unlink(filePath, () => {});
+                log.error('文件写入失败:', err);
+                reject(err);
+            });
+        });
+
+        request.on('error', (err) => {
             fs.unlink(filePath, () => {});
             log.error('下载失败:', err);
             reject(err);
+        });
+
+        // 设置超时
+        request.setTimeout(60000, () => {
+            request.destroy();
+            reject(new Error('下载超时'));
         });
     });
 }

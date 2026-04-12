@@ -187,6 +187,30 @@
             font-size: 11px;
         }
 
+        .video-item .source {
+            color: #4ade80;
+            font-size: 10px;
+            margin-top: 2px;
+        }
+
+        .watermark-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            margin-left: 6px;
+        }
+
+        .watermark-free {
+            background: #22c55e;
+            color: white;
+        }
+
+        .watermark-unknown {
+            background: #f59e0b;
+            color: white;
+        }
+
         .current-account {
             background: rgba(74, 222, 128, 0.2);
             padding: 8px 12px;
@@ -345,6 +369,7 @@
             <div class="video-list" id="videoList">
                 <div class="status-item status-info">等待拦截视频...</div>
             </div>
+            <button class="btn btn-success" id="extractVideosBtn" style="margin-top: 8px;">提取当前页面视频</button>
             <button class="btn btn-primary" id="downloadAllBtn" style="margin-top: 8px;" disabled>下载全部视频</button>
         </div>
 
@@ -473,17 +498,44 @@
             interceptedVideos.forEach((video, index) => {
                 const item = document.createElement('div');
                 item.className = 'video-item';
+
+                // 判断是否有无水印标识
+                const watermarkBadge = video.isWatermarkFree
+                    ? '<span class="watermark-badge watermark-free">无水印</span>'
+                    : '<span class="watermark-badge watermark-unknown">未知</span>';
+
+                // 截取 URL 显示
+                const shortUrl = video.url.length > 60
+                    ? video.url.substring(0, 60) + '...'
+                    : video.url;
+
                 item.innerHTML = `
-                    <div class="url">${video.url.substring(0, 80)}...</div>
-                    <div class="time">${video.timestamp}</div>
-                    <button class="btn btn-primary" style="margin-top: 4px; font-size: 11px;" onclick="downloadVideo(${index})">
-                        下载此视频
-                    </button>
+                    <div class="url" title="${video.url}">${shortUrl}</div>
+                    <div>
+                        <span class="time">${video.timestamp}</span>
+                        ${watermarkBadge}
+                    </div>
+                    <div class="source">来源: ${video.source || video.type || 'network'}</div>
+                    <div style="display: flex; gap: 8px; margin-top: 6px;">
+                        <button class="btn btn-primary" style="flex: 1; font-size: 11px; padding: 6px;" onclick="downloadVideo(${index})">
+                            下载
+                        </button>
+                        <button class="btn btn-warning" style="flex: 1; font-size: 11px; padding: 6px;" onclick="copyVideoUrl(${index})">
+                            复制链接
+                        </button>
+                    </div>
                 `;
                 videoList.appendChild(item);
             });
 
             document.getElementById('downloadAllBtn').disabled = false;
+        }
+
+        // 复制视频链接
+        function copyVideoUrl(index) {
+            const video = interceptedVideos[index];
+            require('electron').clipboard.writeText(video.url);
+            log('视频链接已复制到剪贴板', 'success');
         }
 
         // 下载视频
@@ -686,6 +738,25 @@
                 log('页面结构分析完成，请查看控制台日志', 'success');
             } else {
                 log('分析失败，请确保已打开即梦窗口', 'error');
+            }
+        });
+
+        // 提取视频链接
+        document.getElementById('extractVideosBtn').addEventListener('click', async () => {
+            log('提取当前页面视频链接...', 'info');
+            const result = await ipcRenderer.invoke('extract-videos');
+            if (result.success) {
+                if (result.count > 0) {
+                    log(`提取到 ${result.count} 个视频链接`, 'success');
+                    result.videos.forEach((v, i) => {
+                        const watermarkStatus = v.isWatermarkFree ? '(无水印)' : '';
+                        log(`  ${i + 1}. ${v.url.substring(0, 50)}... ${watermarkStatus}`, 'info');
+                    });
+                } else {
+                    log(result.message || '未找到视频链接', 'warning');
+                }
+            } else {
+                log(`提取失败: ${result.error}`, 'error');
             }
         });
 
