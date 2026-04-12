@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>即梦AI自动化控制台</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #fff;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 460px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 20px;
+            color: #4ade80;
+        }
+
+        .version-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            margin-left: 8px;
+        }
+
+        .version-cn {
+            background: #ef4444;
+        }
+
+        .version-intl {
+            background: #3b82f6;
+        }
+
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 16px;
+            backdrop-filter: blur(10px);
+        }
+
+        .card-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 12px;
+            color: #4ade80;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            padding-bottom: 8px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: all 0.3s;
+            margin-bottom: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #4ade80, #22c55e);
+            color: white;
+        }
+
+        .btn-warning {
+            background: linear-gradient(135deg, #f59e0b, #d97706);
+            color: white;
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: white;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        select, input, textarea {
+            width: 100%;
+            padding: 10px;
+            border: none;
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        select option {
+            background: #1a1a2e;
+        }
+
+        textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+
+        .status-bar {
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 6px;
+            padding: 10px;
+            font-size: 12px;
+            margin-top: 8px;
+            font-family: monospace;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+
+        .status-item {
+            margin-bottom: 4px;
+            padding: 4px 8px;
+            border-radius: 4px;
+        }
+
+        .status-success {
+            background: rgba(74, 222, 128, 0.2);
+            color: #4ade80;
+        }
+
+        .status-error {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .status-info {
+            background: rgba(59, 130, 246, 0.2);
+            color: #60a5fa;
+        }
+
+        .status-warning {
+            background: rgba(245, 158, 11, 0.2);
+            color: #f59e0b;
+        }
+
+        .video-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .video-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 8px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 12px;
+            word-break: break-all;
+        }
+
+        .video-item .url {
+            color: #60a5fa;
+            margin-bottom: 4px;
+        }
+
+        .video-item .time {
+            color: #888;
+            font-size: 11px;
+        }
+
+        .current-account {
+            background: rgba(74, 222, 128, 0.2);
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .current-account .label {
+            color: #888;
+            font-size: 11px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+
+        .badge-success {
+            background: #22c55e;
+        }
+
+        .badge-warning {
+            background: #f59e0b;
+        }
+
+        .login-status {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 13px;
+        }
+
+        .login-status.logged-in {
+            background: rgba(74, 222, 128, 0.2);
+            color: #4ade80;
+        }
+
+        .login-status.not-logged-in {
+            background: rgba(239, 68, 68, 0.2);
+            color: #ef4444;
+        }
+
+        .qr-section {
+            text-align: center;
+            padding: 16px;
+        }
+
+        .qr-tip {
+            font-size: 12px;
+            color: #888;
+            margin-top: 8px;
+        }
+
+        .api-info {
+            font-size: 11px;
+            color: #888;
+            text-align: center;
+            margin-top: 16px;
+        }
+
+        .api-info code {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .login-time {
+            font-size: 11px;
+            color: #888;
+            margin-top: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>
+            即梦AI自动化控制台
+            <span class="version-badge version-cn">国内版</span>
+        </h1>
+
+        <!-- 登录状态 -->
+        <div class="card">
+            <div class="card-title">登录状态</div>
+            <div id="loginStatus" class="login-status not-logged-in">
+                <div>
+                    <span>状态: <span id="loginStatusText">检测中...</span></span>
+                    <div class="login-time" id="loginTime"></div>
+                </div>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn btn-primary" style="width: auto; padding: 6px 12px; margin: 0;" id="checkStatusBtn">检查</button>
+                    <button class="btn btn-danger" style="width: auto; padding: 6px 12px; margin: 0; display: none;" id="logoutBtn">退出</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 扫码登录（国内版） -->
+        <div class="card" id="qrLoginCard">
+            <div class="card-title">扫码登录</div>
+            <div class="qr-section">
+                <p style="margin-bottom: 12px; font-size: 13px;">国内版使用抖音/剪映APP扫码登录</p>
+                <button class="btn btn-success" id="showQRBtn">显示登录二维码</button>
+                <p class="qr-tip" id="qrTip">点击按钮后，请在弹出的窗口中扫码</p>
+            </div>
+        </div>
+
+        <!-- 账号管理 -->
+        <div class="card" id="accountCard">
+            <div class="card-title">账号管理 <span id="accountCount" style="font-size: 11px; color: #888;"></span></div>
+            <div id="currentAccount" class="current-account hidden">
+                <span class="label">当前登录:</span>
+                <span id="currentAccountName">-</span>
+            </div>
+            <div id="startAccountDiv" class="hidden" style="margin-bottom: 8px;">
+                <label style="font-size: 12px; color: #888; margin-bottom: 4px; display: block;">选择要登录的账号:</label>
+                <select id="startAccountSelect" style="margin-bottom: 8px;">
+                </select>
+            </div>
+            <button class="btn btn-primary" id="loadAccountsBtn">加载账号文件</button>
+            <button class="btn btn-success" id="loginBtn" disabled>邮箱登录选中账号</button>
+        </div>
+
+        <!-- 素材管理 -->
+        <div class="card">
+            <div class="card-title">素材管理 <span id="materialsInfo" style="font-size: 11px; color: #888;"></span></div>
+            <div id="currentMaterialsFolder" style="font-size: 12px; color: #888; margin-bottom: 8px; word-break: break-all;"></div>
+            <button class="btn btn-primary" id="selectMaterialsBtn">选择素材文件夹</button>
+            <button class="btn btn-success" id="uploadMaterialsBtn" disabled style="margin-top: 8px;">上传素材到页面</button>
+            <div id="materialsList" style="margin-top: 8px; font-size: 12px;"></div>
+        </div>
+
+        <!-- 任务提交 -->
+        <div class="card">
+            <div class="card-title">任务提交</div>
+            <textarea id="taskText" placeholder="输入视频生成文案..."></textarea>
+            <button class="btn btn-warning" id="submitTaskBtn" disabled>提交生成任务</button>
+            <button class="btn btn-primary" id="analyzePageBtn" style="margin-top: 8px;">分析页面结构</button>
+        </div>
+
+        <!-- 视频拦截 -->
+        <div class="card">
+            <div class="card-title">
+                拦截的视频
+                <span class="badge badge-success" id="videoCount">0</span>
+            </div>
+            <div class="video-list" id="videoList">
+                <div class="status-item status-info">等待拦截视频...</div>
+            </div>
+            <button class="btn btn-primary" id="downloadAllBtn" style="margin-top: 8px;" disabled>下载全部视频</button>
+        </div>
+
+        <!-- 快捷操作 -->
+        <div class="card">
+            <div class="card-title">快捷操作</div>
+            <button class="btn btn-primary" id="openJimengBtn">打开即梦网站</button>
+            <button class="btn btn-danger" id="clearVideosBtn">清空拦截记录</button>
+        </div>
+
+        <!-- 状态日志 -->
+        <div class="card">
+            <div class="card-title">状态日志</div>
+            <div class="status-bar" id="statusLog">
+                <div class="status-item status-info">系统启动中...</div>
+            </div>
+        </div>
+
+        <!-- API 信息 -->
+        <div class="api-info">
+            API 服务: <code>http://localhost:3690</code>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        // 状态
+        let accounts = [];
+        let currentAccountIndex = -1;
+        let interceptedVideos = [];
+        let isLoggedIn = false;
+
+        // DOM 元素
+        const currentAccountDiv = document.getElementById('currentAccount');
+        const currentAccountName = document.getElementById('currentAccountName');
+        const videoList = document.getElementById('videoList');
+        const videoCount = document.getElementById('videoCount');
+        const statusLog = document.getElementById('statusLog');
+        const loginStatus = document.getElementById('loginStatus');
+        const loginStatusText = document.getElementById('loginStatusText');
+
+        // 日志函数
+        function log(message, type = 'info') {
+            const item = document.createElement('div');
+            item.className = `status-item status-${type}`;
+            item.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            statusLog.appendChild(item);
+            statusLog.scrollTop = statusLog.scrollHeight;
+        }
+
+        // 更新登录状态显示
+        function updateLoginStatus(status) {
+            isLoggedIn = status.isLoggedIn;
+            const logoutBtn = document.getElementById('logoutBtn');
+            const loginTime = document.getElementById('loginTime');
+
+            if (status.isLoggedIn) {
+                loginStatus.className = 'login-status logged-in';
+                loginStatusText.textContent = status.username ? `已登录: ${status.username}` : '已登录';
+                document.getElementById('submitTaskBtn').disabled = false;
+                logoutBtn.style.display = 'inline-block';
+
+                // 显示登录时间
+                if (status.lastLoginTime) {
+                    const date = new Date(status.lastLoginTime);
+                    loginTime.textContent = `登录时间: ${date.toLocaleString()}`;
+                }
+            } else {
+                loginStatus.className = 'login-status not-logged-in';
+                loginStatusText.textContent = '未登录';
+                document.getElementById('submitTaskBtn').disabled = true;
+                logoutBtn.style.display = 'none';
+                loginTime.textContent = '';
+            }
+        }
+
+        // 更新账号选择框（已删除旧的select，改用startAccountSelect）
+        function updateAccountSelect() {
+            // 不再需要，保留空函数避免报错
+        }
+
+        // 更新开始账号选择框
+        function updateStartAccountSelect() {
+            const startSelect = document.getElementById('startAccountSelect');
+            const startDiv = document.getElementById('startAccountDiv');
+            const countSpan = document.getElementById('accountCount');
+            const loginBtn = document.getElementById('loginBtn');
+
+            if (accounts.length === 0) {
+                startDiv.classList.add('hidden');
+                countSpan.textContent = '';
+                loginBtn.disabled = true;
+                return;
+            }
+
+            countSpan.textContent = `(共 ${accounts.length} 个账号)`;
+            startDiv.classList.remove('hidden');
+
+            startSelect.innerHTML = '';
+            accounts.forEach((acc, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                // acc 现在是 { email, password } 对象
+                const email = acc.email || acc;
+                option.textContent = `第${index + 1}个: ${email}`;
+                startSelect.appendChild(option);
+            });
+
+            // 默认选中第一个账号并启用登录按钮
+            startSelect.value = '0';
+            loginBtn.disabled = false;
+        }
+
+        // 更新视频列表
+        function updateVideoList() {
+            videoCount.textContent = interceptedVideos.length;
+            videoList.innerHTML = '';
+
+            if (interceptedVideos.length === 0) {
+                videoList.innerHTML = '<div class="status-item status-info">等待拦截视频...</div>';
+                document.getElementById('downloadAllBtn').disabled = true;
+                return;
+            }
+
+            interceptedVideos.forEach((video, index) => {
+                const item = document.createElement('div');
+                item.className = 'video-item';
+                item.innerHTML = `
+                    <div class="url">${video.url.substring(0, 80)}...</div>
+                    <div class="time">${video.timestamp}</div>
+                    <button class="btn btn-primary" style="margin-top: 4px; font-size: 11px;" onclick="downloadVideo(${index})">
+                        下载此视频
+                    </button>
+                `;
+                videoList.appendChild(item);
+            });
+
+            document.getElementById('downloadAllBtn').disabled = false;
+        }
+
+        // 下载视频
+        async function downloadVideo(index) {
+            const video = interceptedVideos[index];
+            const filename = `video_${Date.now()}_${index}.mp4`;
+
+            log(`正在下载视频 ${index + 1}...`, 'info');
+
+            try {
+                const result = await ipcRenderer.invoke('download-video', {
+                    url: video.url,
+                    filename: filename
+                });
+
+                if (result.success) {
+                    log(`视频下载成功: ${result.path}`, 'success');
+                } else {
+                    log(`视频下载失败: ${result.error}`, 'error');
+                }
+            } catch (error) {
+                log(`下载错误: ${error.message}`, 'error');
+            }
+        }
+
+        // 事件监听
+
+        // 检查登录状态
+        document.getElementById('checkStatusBtn').addEventListener('click', async () => {
+            log('检查登录状态...', 'info');
+            const status = await ipcRenderer.invoke('check-login-status');
+            updateLoginStatus(status);
+            log(`登录状态: ${status.isLoggedIn ? '已登录' : '未登录'}`, status.isLoggedIn ? 'success' : 'warning');
+        });
+
+        // 退出登录
+        document.getElementById('logoutBtn').addEventListener('click', async () => {
+            log('退出登录...', 'info');
+            const result = await ipcRenderer.invoke('logout');
+            if (result.success) {
+                updateLoginStatus({ isLoggedIn: false });
+                log('已退出登录', 'warning');
+            }
+        });
+
+        // 显示登录二维码
+        document.getElementById('showQRBtn').addEventListener('click', async () => {
+            log('正在显示登录二维码...', 'info');
+            document.getElementById('showQRBtn').disabled = true;
+
+            const result = await ipcRenderer.invoke('show-qr-login');
+
+            if (result.success) {
+                log('二维码已显示，请扫码登录', 'success');
+                document.getElementById('qrTip').textContent = result.message || '请在弹出的窗口中扫码登录';
+
+                // 定时检查登录状态
+                let checkCount = 0;
+                const checkInterval = setInterval(async () => {
+                    checkCount++;
+                    if (checkCount > 60) { // 最多检查60次，每次2秒
+                        clearInterval(checkInterval);
+                        log('扫码超时，请重新获取二维码', 'warning');
+                        document.getElementById('showQRBtn').disabled = false;
+                        return;
+                    }
+
+                    const status = await ipcRenderer.invoke('check-login-status');
+                    if (status.isLoggedIn) {
+                        clearInterval(checkInterval);
+                        updateLoginStatus(status);
+                        log('扫码登录成功!', 'success');
+                        document.getElementById('showQRBtn').disabled = false;
+                    }
+                }, 2000);
+            } else {
+                log(`显示二维码失败: ${result.error}`, 'error');
+            }
+
+            document.getElementById('showQRBtn').disabled = false;
+        });
+
+        // 加载账号文件
+        document.getElementById('loadAccountsBtn').addEventListener('click', async () => {
+            log('加载账号文件...', 'info');
+            await ipcRenderer.invoke('load-accounts');
+        });
+
+        // 账号选择
+        const startAccountSelect = document.getElementById('startAccountSelect');
+        startAccountSelect.addEventListener('change', () => {
+            document.getElementById('loginBtn').disabled = startAccountSelect.value === '';
+        });
+
+        // 邮箱登录
+        document.getElementById('loginBtn').addEventListener('click', async () => {
+            const index = parseInt(startAccountSelect.value);
+            if (isNaN(index)) return;
+
+            const account = accounts[index];
+            const email = account.email || account;
+            const password = account.password || 'Cyh0711666';
+
+            log(`登录账号: ${email}...`, 'info');
+            document.getElementById('loginBtn').disabled = true;
+
+            const result = await ipcRenderer.invoke('login-with-email', { email, password });
+
+            if (result.success) {
+                log('登录请求已提交!', 'success');
+                currentAccountIndex = index;
+                currentAccountName.textContent = email;
+                currentAccountDiv.classList.remove('hidden');
+
+                // 等待几秒后检查登录状态
+                setTimeout(async () => {
+                    const status = await ipcRenderer.invoke('check-login-status');
+                    if (status.isLoggedIn) {
+                        log('登录成功!', 'success');
+                        updateLoginStatus(status);
+                    } else {
+                        log('登录可能失败，请检查', 'warning');
+                    }
+                }, 3000);
+            } else {
+                log(`登录失败: ${result.error}`, 'error');
+            }
+
+            document.getElementById('loginBtn').disabled = false;
+        });
+
+        // 提交任务（解析文案、匹配素材、上传、填充文案）
+        document.getElementById('submitTaskBtn').addEventListener('click', async () => {
+            const text = document.getElementById('taskText').value;
+            if (!text) {
+                log('请输入文案内容', 'error');
+                return;
+            }
+
+            log('提交任务...', 'info');
+
+            // 1. 解析文案并匹配素材
+            const matchResult = await ipcRenderer.invoke('match-prompt-materials', {
+                text: text,
+                materials: materialsFiles
+            });
+
+            if (matchResult.matchedFiles && matchResult.matchedFiles.length > 0) {
+                log(`匹配到 ${matchResult.matchedFiles.length} 个素材文件`, 'success');
+                matchResult.matchedFiles.forEach(f => {
+                    log(`  - ${f.category}: ${f.name}`, 'info');
+                });
+
+                // 显示生成的引用映射
+                if (matchResult.generatedText) {
+                    log('原始文案:', 'info');
+                    log(matchResult.generatedText.originalText, 'info');
+                    log('引用映射:', 'info');
+                    Object.entries(matchResult.generatedText.references).forEach(([name, ref]) => {
+                        log(`  "${name}" -> "${ref}"`, 'info');
+                    });
+                }
+
+                // 2. 上传匹配的素材并填充文案
+                const uploadResult = await ipcRenderer.invoke('upload-materials', {
+                    files: matchResult.matchedFiles,
+                    generatedText: matchResult.generatedText
+                });
+
+                if (uploadResult.success) {
+                    log(`素材上传成功: ${uploadResult.count} 个文件`, 'success');
+                } else {
+                    log(`素材上传失败: ${uploadResult.error}`, 'warning');
+                }
+
+                // 上传完成后不需要再调用 submit-task，文案已在 upload-materials 中填充
+                return;
+            } else {
+                log('没有匹配到素材文件', 'info');
+            }
+
+            // 没有素材匹配时，才单独填充文案
+            const result = await ipcRenderer.invoke('submit-task', {
+                text: text,
+                type: 'text-to-video'
+            });
+
+            if (result.success) {
+                log('任务提交成功!', 'success');
+            } else {
+                log(`任务提交失败: ${result.error}`, 'error');
+            }
+        });
+
+        // 分析页面结构
+        document.getElementById('analyzePageBtn').addEventListener('click', async () => {
+            log('分析页面结构...', 'info');
+            const result = await ipcRenderer.invoke('analyze-page');
+            if (result) {
+                log('页面结构分析完成，请查看控制台日志', 'success');
+            } else {
+                log('分析失败，请确保已打开即梦窗口', 'error');
+            }
+        });
+
+        // 打开即梦网站
+        document.getElementById('openJimengBtn').addEventListener('click', async () => {
+            log('打开即梦网站...', 'info');
+            await ipcRenderer.invoke('open-jimeng');
+        });
+
+        // 清空视频记录
+        document.getElementById('clearVideosBtn').addEventListener('click', () => {
+            interceptedVideos = [];
+            updateVideoList();
+            log('已清空拦截记录', 'info');
+        });
+
+        // 下载全部视频
+        document.getElementById('downloadAllBtn').addEventListener('click', async () => {
+            log(`开始下载 ${interceptedVideos.length} 个视频...`, 'info');
+
+            for (let i = 0; i < interceptedVideos.length; i++) {
+                await downloadVideo(i);
+            }
+
+            log('全部下载完成!', 'success');
+        });
+
+        // IPC 事件监听
+        ipcRenderer.on('accounts-loaded', (event, data) => {
+            accounts = data.accounts;
+            updateAccountSelect();
+            updateStartAccountSelect();
+            log(`已加载 ${data.count} 个账号`, 'success');
+        });
+
+        ipcRenderer.on('login-result', (event, result) => {
+            if (result.success) {
+                log('登录请求已提交', 'success');
+            } else {
+                log(`登录失败: ${result.error}`, 'error');
+            }
+        });
+
+        ipcRenderer.on('video-intercepted', (event, video) => {
+            log(`拦截到视频: ${video.url.substring(0, 50)}...`, 'success');
+            interceptedVideos.push(video);
+            updateVideoList();
+        });
+
+        ipcRenderer.on('api-response', (event, data) => {
+            log(`API: ${data.url} - ${data.status}`, 'info');
+        });
+
+        ipcRenderer.on('popup-handled', (event, data) => {
+            if (data.handled) {
+                log('已自动处理弹窗/协议', 'success');
+            }
+        });
+
+        ipcRenderer.on('task-submitted', (event, result) => {
+            if (result.success) {
+                log('任务已提交', 'success');
+            } else {
+                log(`任务失败: ${result.error}`, 'error');
+            }
+        });
+
+        ipcRenderer.on('qr-code-result', (event, result) => {
+            if (result.success) {
+                log('二维码显示成功', 'success');
+            } else {
+                log(`二维码显示失败: ${result.error}`, 'error');
+            }
+        });
+
+        // 参数设置结果
+        ipcRenderer.on('params-set', (event, result) => {
+            if (result.success) {
+                log('已设置默认生成参数', 'success');
+                if (result.results) {
+                    result.results.forEach(r => {
+                        if (r.success) {
+                            log(`${r.label}: ${r.value}`, 'info');
+                        }
+                    });
+                }
+            } else {
+                log(`参数设置失败: ${result.error}`, 'warning');
+            }
+        });
+
+        // 登录状态变化通知
+        ipcRenderer.on('login-status-changed', (event, status) => {
+            updateLoginStatus(status);
+            if (status.isLoggedIn) {
+                log('检测到登录状态', 'success');
+            }
+        });
+
+        // 初始化
+        log('系统已就绪 - 国际版（邮箱登录）', 'success');
+
+        // 素材管理状态
+        let materialsFolder = '';
+        let materialsFiles = [];
+
+        // 自动加载上次的账号文件和素材文件夹
+        setTimeout(async () => {
+            const savedState = await ipcRenderer.invoke('get-saved-login-state');
+            if (savedState && savedState.isLoggedIn) {
+                updateLoginStatus(savedState);
+                log('检测到上次登录状态，正在验证...', 'info');
+            }
+
+            // 自动加载上次的账号文件
+            const result = await ipcRenderer.invoke('auto-load-last-accounts');
+            if (result.count > 0) {
+                log(`自动加载了 ${result.count} 个账号`, 'success');
+            }
+
+            // 自动加载上次的素材文件夹
+            const matResult = await ipcRenderer.invoke('auto-load-last-materials');
+            if (matResult && matResult.folder) {
+                materialsFolder = matResult.folder;
+                materialsFiles = matResult.files || [];
+                updateMaterialsDisplay();
+                log(`自动加载素材文件夹: ${matResult.folder}`, 'success');
+            }
+        }, 500);
+
+        // 选择素材文件夹
+        document.getElementById('selectMaterialsBtn').addEventListener('click', async () => {
+            log('选择素材文件夹...', 'info');
+            const result = await ipcRenderer.invoke('select-materials-folder');
+            if (result.folder) {
+                materialsFolder = result.folder;
+                materialsFiles = result.files || [];
+                updateMaterialsDisplay();
+                log(`已选择文件夹: ${result.folder}`, 'success');
+            }
+        });
+
+        // 上传素材到页面
+        document.getElementById('uploadMaterialsBtn').addEventListener('click', async () => {
+            if (!materialsFiles || materialsFiles.length === 0) {
+                log('请先选择素材文件夹', 'error');
+                return;
+            }
+            log('上传素材到页面...', 'info');
+            const result = await ipcRenderer.invoke('upload-materials', { files: materialsFiles });
+            if (result.success) {
+                log(`已上传 ${result.count} 个素材`, 'success');
+            } else {
+                log(`上传失败: ${result.error}`, 'error');
+            }
+        });
+
+        // 更新素材显示
+        function updateMaterialsDisplay() {
+            const folderDiv = document.getElementById('currentMaterialsFolder');
+            const infoSpan = document.getElementById('materialsInfo');
+            const listDiv = document.getElementById('materialsList');
+            const uploadBtn = document.getElementById('uploadMaterialsBtn');
+
+            if (materialsFolder) {
+                folderDiv.textContent = `文件夹: ${materialsFolder}`;
+                infoSpan.textContent = `(${materialsFiles.length} 个文件)`;
+                uploadBtn.disabled = !isLoggedIn;
+
+                // 显示文件列表
+                listDiv.innerHTML = '';
+                materialsFiles.forEach(file => {
+                    const div = document.createElement('div');
+                    div.className = 'status-item status-info';
+                    div.style.padding = '4px 8px';
+                    div.style.marginBottom = '4px';
+                    div.textContent = file.name;
+                    listDiv.appendChild(div);
+                });
+            } else {
+                folderDiv.textContent = '';
+                infoSpan.textContent = '';
+                listDiv.innerHTML = '';
+                uploadBtn.disabled = true;
+            }
+        }
+
+        // 等待后端验证实际登录状态并通知
+        // login-status-changed 事件会自动更新状态
+    </script>
+</body>
+</html>

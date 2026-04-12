@@ -1,0 +1,1780 @@
+/**
+ * 窗口管理模块
+ */
+
+const { BrowserWindow, session } = require('electron');
+const path = require('path');
+const log = require('./logger');
+const config = require('./config');
+const auth = require('./auth');
+
+let mainWindow = null;
+let jimengWindow = null;
+
+// 视频拦截回调
+let onVideoIntercepted = null;
+let onApiResponse = null;
+
+/**
+ * 设置视频拦截回调
+ */
+function setVideoInterceptedCallback(callback) {
+    onVideoIntercepted = callback;
+}
+
+/**
+ * 设置 API 响应回调
+ */
+function setApiResponseCallback(callback) {
+    onApiResponse = callback;
+}
+
+/**
+ * 创建主控制窗口
+ */
+function createMainWindow(Menu) {
+    mainWindow = new BrowserWindow({
+        width: 500,
+        height: 700,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false
+        },
+        title: '即梦AI自动化控制台',
+        icon: path.join(__dirname, '..', 'icon.png')
+    });
+
+    mainWindow.loadFile(path.join(__dirname, '..', 'index.html'));
+    mainWindow.webContents.openDevTools();
+
+    mainWindow.on('closed', () => {
+        mainWindow = null;
+    });
+
+    if (Menu) {
+        const menuTemplate = [
+            {
+                label: '文件',
+                submenu: [
+                    {
+                        label: '加载账号文件',
+                        click: () => {
+                            // 通过 IPC 通知渲染进程
+                            mainWindow.webContents.send('load-accounts-request');
+                        }
+                    },
+                    { type: 'separator' },
+                    { role: 'quit' }
+                ]
+            },
+            {
+                label: '视图',
+                submenu: [
+                    { role: 'reload' },
+                    { role: 'toggleDevTools' }
+                ]
+            }
+        ];
+
+        const menu = Menu.buildFromTemplate(menuTemplate);
+        Menu.setApplicationMenu(menu);
+    }
+
+    return mainWindow;
+}
+
+/**
+ * 创建即梦网站窗口
+ */
+function createJimengWindow() {
+    if (jimengWindow) {
+        jimengWindow.focus();
+        return jimengWindow;
+    }
+
+    jimengWindow = new BrowserWindow({
+        width: 1400,
+        height: 900,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, '..', 'preload.js'),
+            webSecurity: false,
+            partition: 'persist:jimeng'
+        },
+        title: '即梦AI - 自动化窗口'
+    });
+
+    jimengWindow.loadURL(config.currentVersion === 'cn' ? config.targetUrlCN : config.targetUrlIntl);
+    jimengWindow.webContents.openDevTools();
+
+    // 设置请求拦截
+    setupRequestInterceptor(jimengWindow.webContents);
+
+    // 登录状态追踪
+    let isProcessingLogin = false;
+    let loginCheckAttempts = 0;
+    const maxLoginCheckAttempts = 30; // 最多检查30次，每次2秒
+
+    // 页面加载完成后自动处理弹窗和检查登录状态
+    jimengWindow.webContents.on('did-finish-load', () => {
+        log.info('页面加载完成，检查弹窗...');
+        autoHandlePopups();
+
+        // 延迟检查登录状态（增加到 3 秒，等待页面完全加载）
+        setTimeout(async () => {
+            await checkAndHandleLoginStatus();
+        }, 3000);
+    });
+
+    // 定时检查并处理弹窗
+    setInterval(() => {
+        if (jimengWindow && !jimengWindow.isDestroyed()) {
+            autoHandlePopups();
+        }
+    }, 3000);
+
+    // 定时检查登录状态（每5秒检查一次）
+    setInterval(async () => {
+        if (jimengWindow && !jimengWindow.isDestroyed() && !isProcessingLogin) {
+            const status = await checkLoginStatus();
+
+            // 通知主窗口登录状态
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('login-status-changed', {
+                    isLoggedIn: status.isLoggedIn === true,
+                    username: status.username || null
+                });
+            }
+
+            // 如果检测到新登录，执行参数设置
+            if (status.isLoggedIn) {
+                const savedState = auth.getLoginState();
+                if (!savedState || !savedState.isLoggedIn) {
+                    log.info('检测到新登录，保存状态并设置参数...');
+                    auth.saveLoginState({ isLoggedIn: true, username: status.username });
+                    await auth.saveCookies(jimengWindow);
+                    await setDefaultGenerateParams();
+                }
+            }
+        }
+    }, 5000);
+
+    jimengWindow.on('closed', () => {
+        jimengWindow = null;
+    });
+
+    return jimengWindow;
+}
+
+/**
+ * 检查并处理登录状态
+ */
+async function checkAndHandleLoginStatus() {
+    if (!jimengWindow || jimengWindow.isDestroyed()) return;
+
+    try {
+        log.info('检查登录状态...');
+        const status = await checkLoginStatus();
+        log.info('登录状态结果:', status);
+
+        // 通知主窗口
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('login-status-changed', {
+                isLoggedIn: status.isLoggedIn === true,
+                username: status.username || null
+            });
+        }
+
+        if (status.isLoggedIn) {
+            log.info('已登录，保存状态和设置参数...');
+            auth.saveLoginState({ isLoggedIn: true, username: status.username });
+            await auth.saveCookies(jimengWindow);
+
+            // 登录成功后设置默认参数
+            await setDefaultGenerateParams();
+        } else {
+            log.info('未登录，等待用户登录...');
+        }
+    } catch (e) {
+        log.error('检查登录状态失败:', e);
+    }
+}
+
+/**
+ * 设置请求拦截器 - 拦截视频下载
+ */
+function setupRequestInterceptor(webContents) {
+    // 监听网络请求 - 视频文件
+    webContents.session.webRequest.onCompleted(
+        { urls: ['*://*/*.mp4', '*://*/*.webm', '*://*/*video*', '*://*/*.m3u8'] },
+        (details) => {
+            log.info('拦截到视频请求:', details.url);
+
+            const videoInfo = {
+                url: details.url,
+                method: details.method,
+                timestamp: new Date().toISOString(),
+                resourceType: details.resourceType,
+                status: details.statusCode
+            };
+
+            if (onVideoIntercepted) {
+                onVideoIntercepted(videoInfo);
+            }
+
+            if (mainWindow) {
+                mainWindow.webContents.send('video-intercepted', videoInfo);
+            }
+        }
+    );
+
+    // 监听 API 响应
+    webContents.session.webRequest.onCompleted(
+        { urls: [
+            '*://*/*generate*',
+            '*://*/*create*',
+            '*://*/*task*',
+            '*://*/api/*',
+            '*://*/*submit*'
+        ]},
+        (details) => {
+            log.info('API请求完成:', details.url);
+            if (mainWindow) {
+                mainWindow.webContents.send('api-response', {
+                    url: details.url,
+                    status: details.statusCode
+                });
+            }
+        }
+    );
+
+    // 监听响应头
+    webContents.session.webRequest.onHeadersReceived(
+        { urls: ['*://*/*'] },
+        (details, callback) => {
+            const contentType = details.responseHeaders?.['content-type']?.[0] || '';
+            if (contentType.includes('video') || contentType.includes('mp4')) {
+                log.info('检测到视频响应:', details.url, contentType);
+            }
+            callback({});
+        }
+    );
+}
+
+/**
+ * 自动处理弹窗
+ */
+async function autoHandlePopups() {
+    if (!jimengWindow || jimengWindow.isDestroyed()) return;
+
+    const popupScript = `
+        (function() {
+            var handled = false;
+
+            try {
+                // 1. 处理用户协议/隐私政策弹窗
+                var agreeButtons = document.querySelectorAll('button, [class*="button"], [class*="btn"]');
+                for (var i = 0; i < agreeButtons.length; i++) {
+                    var btn = agreeButtons[i];
+                    var text = (btn.textContent || '').trim();
+                    if (text === '同意' || text === '确认' || text === '接受' ||
+                        text === '我同意' || text === '我知道了' || text === '确定' ||
+                        text.indexOf('同意并继续') >= 0 || text.indexOf('同意并') >= 0 ||
+                        text === 'Agree' || text === 'Accept' || text === 'OK') {
+                        btn.click();
+                        console.log('[自动处理] 已点击同意按钮:', text);
+                        handled = true;
+                        break;
+                    }
+                }
+
+                // 2. 处理复选框
+                var checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                for (var j = 0; j < checkboxes.length; j++) {
+                    var cb = checkboxes[j];
+                    if (!cb.checked) {
+                        var label = cb.closest('label') || cb.parentElement;
+                        var labelText = label ? label.textContent : '';
+                        if (labelText.indexOf('协议') >= 0 || labelText.indexOf('同意') >= 0 ||
+                            labelText.indexOf('隐私') >= 0 || labelText.indexOf('条款') >= 0) {
+                            cb.click();
+                            handled = true;
+                        }
+                    }
+                }
+
+                // 3. 处理关闭按钮
+                var closeButtons = document.querySelectorAll('[class*="close"], [class*="cancel"], [class*="dismiss"]');
+                for (var k = 0; k < closeButtons.length; k++) {
+                    var btn = closeButtons[k];
+                    var isModalClose = btn.closest('[class*="modal"]') ||
+                                         btn.closest('[class*="dialog"]') ||
+                                         btn.closest('[class*="popup"]');
+                    if (isModalClose) {
+                        btn.click();
+                        handled = true;
+                    }
+                }
+            } catch (e) {
+                console.error('[自动处理] 错误:', e.message);
+            }
+
+            // 返回 JSON 字符串
+            return JSON.stringify({ handled: handled });
+        })();
+    `;
+
+    try {
+        const jsonStr = await jimengWindow.webContents.executeJavaScript(popupScript);
+        const result = JSON.parse(jsonStr);
+        if (result.handled) {
+            log.info('已自动处理弹窗');
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send('popup-handled', { handled: true });
+            }
+        }
+    } catch (error) {
+        // 忽略执行错误
+    }
+}
+
+/**
+ * 检查登录状态
+ */
+async function checkLoginStatus() {
+    // 如果没有即梦窗口，返回保存的状态
+    if (!jimengWindow || jimengWindow.isDestroyed()) {
+        const state = auth.getLoginState();
+        log.info('无即梦窗口，返回保存的状态:', state);
+        return state ? { isLoggedIn: state.isLoggedIn === true, username: state.username || null } : { isLoggedIn: false, username: null };
+    }
+
+    // 检查 webContents 是否有效
+    if (!jimengWindow.webContents || jimengWindow.webContents.isDestroyed()) {
+        log.info('webContents 已销毁');
+        return { isLoggedIn: false, username: null };
+    }
+
+    // 使用 JSON.stringify 确保返回纯字符串，然后解析
+    const checkScript = `
+        (function() {
+            try {
+                // 国际版登录状态检测
+                console.log('=== 开始检测登录状态 ===');
+
+                // 步骤1：检查是否有 Sign in 按钮（未登录标志）
+                var signInButton = null;
+                var allMenuItems = document.querySelectorAll('.lv-menu-item');
+                console.log('菜单项数量:', allMenuItems.length);
+
+                for (var i = 0; i < allMenuItems.length; i++) {
+                    var text = (allMenuItems[i].textContent || '').trim();
+                    console.log('菜单项[' + i + ']:', text);
+                    if (text === 'Sign in' || text === '登录' || text === '报名') {
+                        signInButton = allMenuItems[i];
+                        console.log('>>> 找到 Sign in 按钮!');
+                        break;
+                    }
+                }
+
+                // 关键判断：如果有 Sign in 按钮，一定是未登录
+                if (signInButton) {
+                    console.log('=== 结果: 未登录 (有Sign in按钮) ===');
+                    return JSON.stringify({
+                        isLoggedIn: false,
+                        username: null
+                    });
+                }
+
+                // 步骤2：检查是否有积分显示（登录后有 "50Upgrade" 之类的）
+                var hasCreditDisplay = false;
+                var creditText = '';
+
+                // 只在 .lv-menu-item 中查找，确保是导航栏的积分显示
+                for (var i = 0; i < allMenuItems.length; i++) {
+                    var item = allMenuItems[i];
+                    var text = (item.textContent || '').trim();
+                    var className = item.className || '';
+
+                    // 登录后的积分显示：class包含credit-display，或文本以数字开头+Upgrade
+                    if (className.indexOf('credit-display') >= 0) {
+                        hasCreditDisplay = true;
+                        creditText = text;
+                        console.log('>>> 找到积分显示:', text, className);
+                        break;
+                    }
+
+                    // 检查 "50Upgrade" 格式（数字+Upgrade）
+                    if (/^[0-9]+Upgrade/i.test(text)) {
+                        hasCreditDisplay = true;
+                        creditText = text;
+                        console.log('>>> 找到积分显示:', text);
+                        break;
+                    }
+                }
+
+                // 步骤3：最终判断
+                // 没有 Sign in 按钮且没有积分显示 = 状态未知，可能页面未加载完成
+                if (!hasCreditDisplay) {
+                    console.log('=== 结果: 未登录 (没有积分显示) ===');
+                    return JSON.stringify({
+                        isLoggedIn: false,
+                        username: null
+                    });
+                }
+
+                console.log('=== 结果: 已登录 ===');
+                return JSON.stringify({
+                    isLoggedIn: true,
+                    username: null,
+                    creditText: creditText
+                });
+            } catch (e) {
+                console.error('登录状态检测错误:', e);
+                return JSON.stringify({ isLoggedIn: false, username: null, error: e.message });
+            }
+        })();
+    `;
+
+    try {
+        const jsonStr = await jimengWindow.webContents.executeJavaScript(checkScript);
+        log.info('页面登录状态检查原始结果:', jsonStr);
+
+        // 解析 JSON 字符串
+        const result = JSON.parse(jsonStr);
+        log.info('页面登录状态检查解析结果:', result);
+
+        return {
+            isLoggedIn: result.isLoggedIn === true,
+            username: result.username || null
+        };
+    } catch (error) {
+        log.error('检查登录状态失败:', error);
+        return { isLoggedIn: false, username: null };
+    }
+}
+
+/**
+ * 分析页面元素结构
+ */
+async function analyzePageStructure() {
+    if (!jimengWindow || jimengWindow.isDestroyed()) return;
+
+    log.info('分析页面结构...');
+
+    const analyzeScript = `
+        (function() {
+            var info = {};
+
+            // ===== 分析文本输入框 =====
+            var textInput = document.querySelector('div[contenteditable="true"].ProseMirror') ||
+                           document.querySelector('div[contenteditable="true"]') ||
+                           document.querySelector('textarea');
+            if (textInput) {
+                info.textInput = {
+                    tagName: textInput.tagName,
+                    className: textInput.className,
+                    contentEditable: textInput.contentEditable,
+                    innerHTML: textInput.innerHTML.substring(0, 1000),
+                    textContent: textInput.textContent.substring(0, 500)
+                };
+            }
+
+            // ===== 分析已上传的引用素材 =====
+            var referenceItems = document.querySelectorAll('.reference-item-GyRAe7, [class*="reference-item"]');
+            info.referenceItems = [];
+            for (var i = 0; i < referenceItems.length; i++) {
+                var item = referenceItems[i];
+                var img = item.querySelector('img');
+                var label = item.querySelector('[class*="label"], [class*="name"], span, div');
+                info.referenceItems.push({
+                    index: i,
+                    className: item.className,
+                    dataAttributes: Object.keys(item.dataset).map(function(k) { return k + '=' + item.dataset[k]; }),
+                    hasImage: !!img,
+                    imgSrc: img ? img.src.substring(0, 50) : null,
+                    label: label ? label.textContent.trim() : item.textContent.trim().substring(0, 30),
+                    outerHTML: item.outerHTML.substring(0, 300)
+                });
+            }
+
+            // ===== 分析 @ 引用下拉列表（如果有的话）=====
+            var mentionList = document.querySelector('[class*="mention"], [class*="at-list"], [class*="reference-list"]');
+            if (mentionList) {
+                info.mentionList = {
+                    className: mentionList.className,
+                    html: mentionList.outerHTML.substring(0, 1000)
+                };
+            }
+
+            // 查找 dimension-layout 容器
+            var container = document.querySelector('[class*="dimension-layout"]');
+            if (container) {
+                info.container = {
+                    className: container.className,
+                    html: container.outerHTML.substring(0, 2000)
+                };
+            }
+
+            // 查找所有可能是选项的元素
+            var allButtons = document.querySelectorAll('div[role="button"], button, [class*="select"], [class*="option"], [class*="item"], [class*="btn"]');
+            info.buttons = [];
+            for (var i = 0; i < allButtons.length && i < 150; i++) {
+                var btn = allButtons[i];
+                var text = (btn.textContent || '').trim();
+                if (text.length > 0 && text.length < 100) {
+                    info.buttons.push({
+                        text: text,
+                        className: btn.className,
+                        tagName: btn.tagName
+                    });
+                }
+            }
+
+            // 查找下拉菜单选项（重要！可能在body下的独立层）
+            var dropdownOptions = document.querySelectorAll('.lv-select-dropdown [class*="option"], .lv-select-dropdown [class*="item"], [class*="select-dropdown"] [class*="option"], .lv-dropdown [class*="option"], .lv-dropdown-menu [class*="item"]');
+            info.dropdownOptions = [];
+            for (var i = 0; i < dropdownOptions.length; i++) {
+                var opt = dropdownOptions[i];
+                info.dropdownOptions.push({
+                    text: (opt.textContent || '').trim(),
+                    className: opt.className
+                });
+            }
+
+            // ===== 重要：查找所有弹出层和popover =====
+            var popovers = document.querySelectorAll('[class*="popover"], [class*="popup"], [class*="dropdown"], [class*="modal"], .lv-popover, .lv-popover-inner');
+            info.popovers = [];
+            for (var i = 0; i < popovers.length; i++) {
+                var p = popovers[i];
+                info.popovers.push({
+                    className: p.className,
+                    html: p.outerHTML.substring(0, 1000)
+                });
+            }
+
+            // 查找 lv-popover 内的所有可点击元素
+            var popoverItems = document.querySelectorAll('.lv-popover div[role="button"], .lv-popover button, .lv-popover [class*="option"], .lv-popover [class*="item"]');
+            info.popoverItems = [];
+            for (var i = 0; i < popoverItems.length; i++) {
+                var item = popoverItems[i];
+                info.popoverItems.push({
+                    text: (item.textContent || '').trim(),
+                    className: item.className,
+                    tagName: item.tagName
+                });
+            }
+
+            // 如果上面没找到，尝试查找所有弹出层
+            if (info.popovers.length === 0) {
+                var allPopovers = document.querySelectorAll('[class*="popover"], [class*="popup"], [class*="dropdown-menu"]');
+                info.allPopovers = [];
+                for (var i = 0; i < allPopovers.length; i++) {
+                    var p = allPopovers[i];
+                    info.allPopovers.push({
+                        className: p.className,
+                        text: (p.textContent || '').trim().substring(0, 200)
+                    });
+                }
+            }
+
+            // 查找所有包含 Seedance 或 Fast 的元素
+            var seedanceEls = document.querySelectorAll('[class*="seedance"], [class*="model"]');
+            info.seedanceElements = [];
+            for (var i = 0; i < seedanceEls.length; i++) {
+                var el = seedanceEls[i];
+                var text = (el.textContent || '').trim();
+                if (text.indexOf('Seedance') >= 0 || text.indexOf('Fast') >= 0 || text.indexOf('VIP') >= 0 || text.indexOf('720p') >= 0) {
+                    info.seedanceElements.push({
+                        className: el.className,
+                        text: text.substring(0, 100)
+                    });
+                }
+            }
+
+            // 查找开关
+            var switches = document.querySelectorAll('[class*="switch"], [class*="toggle"], [role="switch"], input[type="checkbox"]');
+            info.switches = [];
+            for (var i = 0; i < switches.length; i++) {
+                var sw = switches[i];
+                var parent = sw.parentElement;
+                info.switches.push({
+                    className: sw.className,
+                    tagName: sw.tagName,
+                    parentText: parent ? (parent.textContent || '').substring(0, 100) : ''
+                });
+            }
+
+            // 查找比例相关
+            var ratios = document.querySelectorAll('[class*="ratio"], [class*="scale"], [class*="dimension"], [class*="proportion"]');
+            info.ratios = [];
+            for (var i = 0; i < ratios.length; i++) {
+                info.ratios.push({
+                    className: ratios[i].className,
+                    text: (ratios[i].textContent || '').substring(0, 50)
+                });
+            }
+
+            // 查找时长相关
+            var durations = document.querySelectorAll('[class*="duration"], [class*="time"], [class*="length"]');
+            info.durations = [];
+            for (var i = 0; i < durations.length; i++) {
+                info.durations.push({
+                    className: durations[i].className,
+                    text: (durations[i].textContent || '').substring(0, 50)
+                });
+            }
+
+            // 查找模型相关
+            var models = document.querySelectorAll('[class*="model"], [class*="version"], [class*="seedance"]');
+            info.models = [];
+            for (var i = 0; i < models.length; i++) {
+                info.models.push({
+                    className: models[i].className,
+                    text: (models[i].textContent || '').substring(0, 100)
+                });
+            }
+
+            return JSON.stringify(info);
+        })();
+    `;
+
+    try {
+        const jsonStr = await jimengWindow.webContents.executeJavaScript(analyzeScript);
+        const result = JSON.parse(jsonStr);
+
+        // 保存到文件
+        const fs = require('fs');
+        const path = require('path');
+        const logFile = path.join(__dirname, '..', 'page-structure.json');
+        fs.writeFileSync(logFile, JSON.stringify(result, null, 2));
+
+        log.info('页面结构已保存到: ' + logFile);
+
+        // 同时打印关键信息
+        if (result.buttons) {
+            log.info('--- 按钮列表 ---');
+            result.buttons.forEach(function(b) {
+                if (b.text.indexOf('视频') >= 0 || b.text.indexOf('生成') >= 0 ||
+                    b.text.indexOf('Seedance') >= 0 || b.text.indexOf('9:16') >= 0 ||
+                    b.text.indexOf('15') >= 0 || b.text.indexOf('参考') >= 0) {
+                    log.info('按钮: "' + b.text + '" class="' + b.className + '"');
+                }
+            });
+        }
+
+        if (result.switches) {
+            log.info('--- 开关列表 ---');
+            result.switches.forEach(function(s) {
+                log.info('开关: class="' + s.className + '" parent="' + s.parentText.substring(0, 30) + '"');
+            });
+        }
+
+        return result;
+    } catch (error) {
+        log.error('分析页面结构失败:', error);
+        return null;
+    }
+}
+
+/**
+ * 设置默认生成参数
+ * 国际版流程: AI Video → Omni reference → Seedance 2.0 Fast (非VIP) → 9:16 → 15s
+ */
+async function setDefaultGenerateParams() {
+    if (!jimengWindow || jimengWindow.isDestroyed()) return;
+
+    log.info('设置默认生成参数...');
+
+    // 延迟等待页面完全渲染
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const paramsScript = `
+        (async function() {
+            var results = [];
+
+            async function sleep(ms) {
+                return new Promise(function(r) { setTimeout(r, ms); });
+            }
+
+            try {
+                // ========== 1. 选择 "AI Video" 模式 ==========
+                console.log('步骤1: 选择 AI Video 模式...');
+                var currentModeLabel = document.querySelector('.lv-select-view-value');
+                var currentMode = currentModeLabel ? (currentModeLabel.textContent || '').trim() : '';
+                console.log('当前模式:', currentMode);
+
+                if (currentMode !== 'AI Video') {
+                    // 点击模式选择器
+                    var modeSelect = document.querySelector('.lv-select.lv-select-single.branded-ttZCKU') ||
+                                     document.querySelector('.toolbar-select-OO8YBx');
+                    if (modeSelect) {
+                        modeSelect.click();
+                        await sleep(800);
+                    }
+
+                    // 选择 AI Video 选项
+                    var allOptions = document.querySelectorAll('.lv-select-option');
+                    console.log('找到选项数量:', allOptions.length);
+                    var found = false;
+                    for (var i = 0; i < allOptions.length; i++) {
+                        var opt = allOptions[i];
+                        var text = (opt.textContent || '').trim();
+                        console.log('选项文本:', text);
+                        if (text === 'AI Video') {
+                            opt.click();
+                            await sleep(2000);
+                            results.push({ label: '生成模式', success: true, value: 'AI Video' });
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found) {
+                        results.push({ label: '生成模式', success: false, error: '未找到 AI Video 选项' });
+                    }
+                } else {
+                    results.push({ label: '生成模式', success: true, value: '已是 AI Video 模式' });
+                }
+
+                // ========== 2. 选择 "Omni reference" (全能参考) ==========
+                await sleep(1000);
+                console.log('步骤2: 选择 Omni reference...');
+
+                // 查找参考类型选择器 (First and last frames)
+                var refSelectors = document.querySelectorAll('.lv-select.lv-select-single');
+                var refSelect = null;
+
+                for (var i = 0; i < refSelectors.length; i++) {
+                    var sel = refSelectors[i];
+                    var text = (sel.textContent || '').trim();
+                    console.log('参考选择器文本:', text);
+                    if (text.indexOf('First and last frames') >= 0 || text.indexOf('Omni reference') >= 0) {
+                        refSelect = sel;
+                        break;
+                    }
+                }
+
+                if (refSelect) {
+                    var currentRef = (refSelect.textContent || '').trim();
+                    console.log('当前参考模式:', currentRef);
+                    if (currentRef.indexOf('Omni reference') < 0) {
+                        refSelect.click();
+                        await sleep(800);
+
+                        var foundRef = false;
+                        var refOptions = document.querySelectorAll('.lv-select-option');
+
+                        for (var i = 0; i < refOptions.length; i++) {
+                            var opt = refOptions[i];
+                            var text = (opt.textContent || '').trim();
+                            console.log('参考选项:', text);
+                            if (text.indexOf('Omni reference') >= 0) {
+                                opt.click();
+                                await sleep(800);
+                                results.push({ label: '全能参考', success: true, value: 'Omni reference' });
+                                foundRef = true;
+                                break;
+                            }
+                        }
+
+                        if (!foundRef) {
+                            document.body.click();
+                            results.push({ label: '全能参考', success: false, error: '未找到 Omni reference 选项' });
+                        }
+                    } else {
+                        results.push({ label: '全能参考', success: true, value: '已是 Omni reference' });
+                    }
+                } else {
+                    results.push({ label: '全能参考', success: false, error: '未找到参考选择器' });
+                }
+
+                // ========== 3. 选择模型 Seedance 2.0 Fast (非VIP) ==========
+                await sleep(800);
+                console.log('步骤3: 选择模型...');
+
+                var modelSelectors = document.querySelectorAll('.lv-select.lv-select-single');
+                var modelSelect = null;
+
+                for (var i = 0; i < modelSelectors.length; i++) {
+                    var sel = modelSelectors[i];
+                    var text = (sel.textContent || '').trim();
+                    console.log('模型选择器文本:', text);
+                    if (text.indexOf('Seedance') >= 0) {
+                        modelSelect = sel;
+                        break;
+                    }
+                }
+
+                if (modelSelect) {
+                    var currentModel = (modelSelect.textContent || '').trim();
+                    console.log('当前模型:', currentModel);
+                    // 检查是否已经是 Seedance 2.0 Fast (非VIP)
+                    if (currentModel.indexOf('Seedance 2.0 Fast') >= 0 && currentModel.indexOf('VIP') < 0) {
+                        results.push({ label: '模型', success: true, value: '已是 Seedance 2.0 Fast' });
+                    } else {
+                        modelSelect.click();
+                        await sleep(800);
+
+                        var foundModel = false;
+                        var modelOptions = document.querySelectorAll('.lv-select-option');
+
+                        for (var i = 0; i < modelOptions.length; i++) {
+                            var opt = modelOptions[i];
+                            var text = (opt.textContent || '').trim();
+                            console.log('模型选项:', text);
+                            // 选择包含 Seedance 2.0 Fast 且不包含 VIP 的选项
+                            if (text.indexOf('Seedance 2.0 Fast') >= 0 && text.indexOf('VIP') < 0) {
+                                opt.click();
+                                await sleep(800);
+                                results.push({ label: '模型', success: true, value: 'Seedance 2.0 Fast' });
+                                foundModel = true;
+                                break;
+                            }
+                        }
+
+                        if (!foundModel) {
+                            document.body.click();
+                            results.push({ label: '模型', success: false, error: '未找到 Seedance 2.0 Fast 选项' });
+                        }
+                    }
+                } else {
+                    results.push({ label: '模型', success: false, error: '未找到模型选择器' });
+                }
+
+                // ========== 4. 设置比例 9:16 ==========
+                await sleep(800);
+                console.log('步骤4: 设置比例 9:16...');
+
+                // 比例按钮是 BUTTON 类型，类名 toolbar-button-atztV1
+                var ratioButton = document.querySelector('.toolbar-button-atztV1');
+
+                if (!ratioButton) {
+                    // 备用方案：查找包含 : 的按钮
+                    var allButtons = document.querySelectorAll('button');
+                    for (var i = 0; i < allButtons.length; i++) {
+                        var btn = allButtons[i];
+                        var text = (btn.textContent || '').trim();
+                        if (text === '16:9' || text === '9:16' || text === '1:1' || text === '4:3') {
+                            ratioButton = btn;
+                            break;
+                        }
+                    }
+                }
+
+                if (ratioButton) {
+                    var currentRatio = (ratioButton.textContent || '').trim();
+                    console.log('当前比例:', currentRatio);
+                    if (currentRatio !== '9:16') {
+                        ratioButton.click();
+                        await sleep(800);
+
+                        var found916 = false;
+
+                        // 方法1: 查找 lv-popover 内的选项
+                        var popover = document.querySelector('.lv-popover');
+                        if (popover) {
+                            console.log('找到弹出层');
+                            // 查找所有可点击元素
+                            var items = popover.querySelectorAll('div, span, button, li');
+                            for (var i = 0; i < items.length; i++) {
+                                var item = items[i];
+                                var text = (item.textContent || '').trim();
+                                if (text === '9:16') {
+                                    console.log('找到 9:16 选项');
+                                    item.click();
+                                    await sleep(500);
+                                    results.push({ label: '比例', success: true, value: '9:16' });
+                                    found916 = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        // 方法2: 查找所有比例为 9:16 的按钮或选项
+                        if (!found916) {
+                            var allItems = document.querySelectorAll('[class*="option"], [class*="item"], button, div[role="button"]');
+                            for (var i = 0; i < allItems.length; i++) {
+                                var item = allItems[i];
+                                var text = (item.textContent || '').trim();
+                                if (text === '9:16') {
+                                    console.log('通过遍历找到 9:16');
+                                    item.click();
+                                    await sleep(500);
+                                    results.push({ label: '比例', success: true, value: '9:16' });
+                                    found916 = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!found916) {
+                            document.body.click();
+                            results.push({ label: '比例', success: false, error: '未找到 9:16 选项' });
+                        }
+                    } else {
+                        results.push({ label: '比例', success: true, value: '已是 9:16' });
+                    }
+                } else {
+                    results.push({ label: '比例', success: false, error: '未找到比例按钮' });
+                }
+
+                // ========== 5. 设置时长 15s ==========
+                await sleep(800);
+                console.log('步骤5: 设置时长 15s...');
+
+                // 时长选择器显示如 "5s" 或 "15s"
+                var durationSelectors = document.querySelectorAll('.lv-select.lv-select-single');
+                var durationSelect = null;
+
+                for (var i = 0; i < durationSelectors.length; i++) {
+                    var sel = durationSelectors[i];
+                    var text = (sel.textContent || '').trim();
+                    console.log('时长选择器文本:', text);
+                    // 查找包含 "s" 且长度短的（5s, 15s 等）
+                    if ((text === '5s' || text === '10s' || text === '15s' || /^[0-9]+s$/.test(text)) &&
+                        text.indexOf('Seedance') < 0 && text.indexOf('Omni') < 0 && text.indexOf('reference') < 0) {
+                        durationSelect = sel;
+                        break;
+                    }
+                }
+
+                if (durationSelect) {
+                    var currentDuration = (durationSelect.textContent || '').trim();
+                    console.log('当前时长:', currentDuration);
+                    if (currentDuration !== '15s') {
+                        durationSelect.click();
+                        await sleep(800);
+
+                        var found15s = false;
+                        var durationOptions = document.querySelectorAll('.lv-select-option');
+
+                        for (var i = 0; i < durationOptions.length; i++) {
+                            var opt = durationOptions[i];
+                            var text = (opt.textContent || '').trim();
+                            console.log('时长选项:', text);
+                            if (text === '15s' || text === '15') {
+                                opt.click();
+                                await sleep(500);
+                                results.push({ label: '时长', success: true, value: '15s' });
+                                found15s = true;
+                                break;
+                            }
+                        }
+
+                        if (!found15s) {
+                            document.body.click();
+                            results.push({ label: '时长', success: false, error: '未找到 15s 选项' });
+                        }
+                    } else {
+                        results.push({ label: '时长', success: true, value: '已是 15s' });
+                    }
+                } else {
+                    results.push({ label: '时长', success: false, error: '未找到时长选择器' });
+                }
+
+                console.log('参数设置完成:', results);
+                return JSON.stringify({ success: true, results: results });
+            } catch (e) {
+                console.error('参数设置错误:', e);
+                return JSON.stringify({ success: false, results: results, error: e.message });
+            }
+        })();
+    `;
+
+    try {
+        const jsonStr = await jimengWindow.webContents.executeJavaScript(paramsScript);
+        const result = JSON.parse(jsonStr);
+
+        // 打印结果
+        if (result.results) {
+            result.results.forEach(function(r) {
+                if (r.success) {
+                    log.info('[参数] ' + r.label + ': ' + r.value + ' ✓');
+                } else {
+                    log.info('[参数] ' + r.label + ': ' + r.error + ' ✗');
+                }
+            });
+        }
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('params-set', result);
+        }
+
+        return result;
+    } catch (error) {
+        log.error('设置参数失败:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * 显示登录二维码
+ */
+async function showLoginQRCode() {
+    log.info('显示登录二维码...');
+
+    if (!jimengWindow) {
+        createJimengWindow();
+        await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+
+    const qrScript = `
+        (async function() {
+            try {
+                let loginButton = document.querySelector('div[class*="login-button-"]') ||
+                                 document.querySelector('.login-button') ||
+                                 document.querySelector('[class*="login"]');
+
+                if (!loginButton) {
+                    const allDivs = document.querySelectorAll('div');
+                    for (const div of allDivs) {
+                        const text = div.textContent ? div.textContent.trim() : '';
+                        if (text === '登录' || text === 'Sign in') {
+                            loginButton = div;
+                            break;
+                        }
+                    }
+                }
+
+                if (loginButton) {
+                    loginButton.click();
+                    await new Promise(r => setTimeout(r, 1500));
+                }
+
+                return {
+                    success: true,
+                    message: '二维码已显示，请使用抖音/剪映APP扫码登录'
+                };
+
+            } catch (error) {
+                return { success: false, error: error.message };
+            }
+        })();
+    `;
+
+    const result = await jimengWindow.webContents.executeJavaScript(qrScript);
+    log.info('二维码结果:', result);
+
+    if (mainWindow) {
+        mainWindow.webContents.send('qr-code-result', result);
+    }
+
+    if (jimengWindow) {
+        jimengWindow.focus();
+    }
+
+    return result;
+}
+
+/**
+ * 使用邮箱密码登录
+ * 参考 dreamina-auto-login.user.js
+ */
+async function loginWithEmail(email, password) {
+    log.info(`开始邮箱登录: ${email}...`);
+
+    if (!jimengWindow || jimengWindow.isDestroyed()) {
+        createJimengWindow();
+        await new Promise(resolve => setTimeout(resolve, 3000));
+    }
+
+    const loginScript = `
+        (async function() {
+            async function sleep(ms) {
+                return new Promise(function(r) { setTimeout(r, ms); });
+            }
+
+            try {
+                // 步骤1：点击登录按钮
+                console.log('步骤1: 点击登录按钮...');
+                let loginButton = document.querySelector('div[class*="login-button-"]') ||
+                                 document.querySelector('.login-button');
+
+                if (!loginButton) {
+                    const allDivs = document.querySelectorAll('div');
+                    for (const div of allDivs) {
+                        const text = div.textContent ? div.textContent.trim() : '';
+                        if (text === 'Sign in' || text === '登录') {
+                            loginButton = div;
+                            break;
+                        }
+                    }
+                }
+
+                if (loginButton) {
+                    loginButton.click();
+                    await sleep(1000);
+                }
+
+                // 步骤2：点击邮箱登录选项
+                console.log('步骤2: 查找邮箱登录选项...');
+                await sleep(500);
+
+                let emailLogin = null;
+                const wrappers = document.querySelectorAll('.lv_new_third_part_sign_in_expand-wrapper');
+
+                for (const wrapper of wrappers) {
+                    const button = wrapper.querySelector('.lv_new_third_part_sign_in_expand-button');
+                    if (button) {
+                        const span = button.querySelector('.lv_new_third_part_sign_in_expand-label');
+                        const spanText = span ? span.textContent.trim() : '';
+
+                        if (spanText === '使用電子郵件繼續' || spanText === '使用电子邮件继续' || spanText === 'Continue with email') {
+                            emailLogin = button;
+                            break;
+                        }
+                    }
+                }
+
+                // 备用方案：直接查找按钮
+                if (!emailLogin) {
+                    const loginButtons = document.querySelectorAll('.lv_new_third_part_sign_in_expand-button');
+                    for (const button of loginButtons) {
+                        const span = button.querySelector('.lv_new_third_part_sign_in_expand-label');
+                        const spanText = span ? span.textContent.trim() : '';
+
+                        if (spanText === '使用電子郵件繼續' || spanText === '使用电子邮件继续' || spanText === 'Continue with email') {
+                            emailLogin = button;
+                            break;
+                        }
+                    }
+                }
+
+                if (!emailLogin) {
+                    return JSON.stringify({ success: false, error: '未找到邮箱登录选项' });
+                }
+
+                emailLogin.click();
+                await sleep(1500);
+
+                // 步骤3：填充邮箱
+                console.log('步骤3: 填充邮箱...');
+                let emailInput = document.querySelector('input[placeholder*="電子郵件"]') ||
+                                document.querySelector('input[placeholder*="email"]') ||
+                                document.querySelector('input[type="email"]') ||
+                                document.querySelector('input[placeholder*="邮件"]');
+
+                if (!emailInput) {
+                    emailInput = document.querySelector('input[name*="email"]') ||
+                                document.querySelector('input[id*="email"]');
+                }
+
+                if (!emailInput) {
+                    return JSON.stringify({ success: false, error: '未找到邮箱输入框' });
+                }
+
+                console.log('邮箱输入框:', emailInput.placeholder);
+
+                // 使用 React 的方式填充值
+                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                nativeInputValueSetter.call(emailInput, '${email}');
+                emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+                emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+                await sleep(500);
+
+                // 步骤4：填充密码
+                console.log('步骤4: 填充密码...');
+                let passwordInput = document.querySelector('input[type="password"]');
+
+                if (!passwordInput) {
+                    passwordInput = document.querySelector('input[placeholder*="密碼"]') ||
+                                   document.querySelector('input[placeholder*="password"]') ||
+                                   document.querySelector('input[placeholder*="密码"]');
+                }
+
+                if (!passwordInput) {
+                    return JSON.stringify({ success: false, error: '未找到密码输入框' });
+                }
+
+                console.log('密码输入框找到');
+
+                // 使用 React 的方式填充值
+                nativeInputValueSetter.call(passwordInput, '${password}');
+                passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+                passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
+                await sleep(500);
+
+                // 步骤5：点击继续按钮
+                console.log('步骤5: 点击继续按钮...');
+
+                // 等待按钮可用
+                await sleep(500);
+
+                // 使用文档中的精确选择器
+                let continueButton = document.querySelector('button.lv_new_sign_in_panel_wide-sign-in-button.lv_new_sign_in_panel_wide-primary-button');
+
+                console.log('Continue按钮查找结果:', continueButton ? '找到' : '未找到');
+
+                if (continueButton) {
+                    console.log('按钮文本:', continueButton.textContent);
+                    console.log('按钮disabled状态:', continueButton.disabled);
+                    console.log('按钮className:', continueButton.className);
+
+                    // 确保按钮没有被禁用
+                    if (continueButton.disabled) {
+                        console.log('按钮被禁用，等待...');
+                        await sleep(1000);
+                    }
+
+                    continueButton.click();
+                    console.log('已点击Continue按钮');
+                    await sleep(1000);
+
+                    return JSON.stringify({ success: true, message: '登录请求已提交' });
+                }
+
+                // 备用方案：通过文本查找
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {
+                    const text = (btn.textContent || '').trim();
+                    console.log('检查按钮:', text);
+                    if (text === 'Continue' || text === '继续' || text === '登錄' || text === '登录' || text === 'Sign in') {
+                        btn.click();
+                        await sleep(1000);
+                        return JSON.stringify({ success: true, message: '登录请求已提交' });
+                    }
+                }
+
+                // 列出所有按钮用于调试
+                console.log('=== 所有按钮列表 ===');
+                document.querySelectorAll('button').forEach(function(b, i) {
+                    console.log('按钮' + i + ':', b.textContent, b.className, 'disabled:', b.disabled);
+                });
+
+                return JSON.stringify({ success: false, error: '未找到继续按钮' });
+
+            } catch (error) {
+                return JSON.stringify({ success: false, error: error.message });
+            }
+        })();
+    `;
+
+    try {
+        const jsonStr = await jimengWindow.webContents.executeJavaScript(loginScript);
+        const result = JSON.parse(jsonStr);
+        log.info('邮箱登录结果:', result);
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('login-result', result);
+        }
+
+        // 如果登录请求已提交，等待登录完成并设置参数
+        if (result.success) {
+            log.info('登录请求已提交，等待登录完成...');
+            // 等待登录完成（最多等待30秒）
+            let loginCheckCount = 0;
+            const checkLogin = async () => {
+                loginCheckCount++;
+                if (loginCheckCount > 15) {
+                    log.info('登录检查超时');
+                    return;
+                }
+
+                await new Promise(r => setTimeout(r, 2000));
+                const status = await checkLoginStatus();
+                log.info(`登录状态检查(${loginCheckCount}):`, status);
+
+                if (status.isLoggedIn) {
+                    log.info('登录成功，保存状态并设置参数...');
+                    auth.saveLoginState({ isLoggedIn: true, username: status.username });
+                    await auth.saveCookies(jimengWindow);
+
+                    // 通知主窗口
+                    if (mainWindow && !mainWindow.isDestroyed()) {
+                        mainWindow.webContents.send('login-status-changed', {
+                            isLoggedIn: true,
+                            username: status.username || null
+                        });
+                    }
+
+                    // 设置默认参数
+                    await setDefaultGenerateParams();
+                } else {
+                    // 继续检查
+                    await checkLogin();
+                }
+            };
+
+            // 开始检查登录状态
+            setTimeout(checkLogin, 3000);
+        }
+
+        return result;
+    } catch (error) {
+        log.error('邮箱登录失败:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * 上传素材到页面
+ * 使用 Chrome DevTools Protocol (CDP) 来设置文件
+ */
+async function uploadMaterials(files, generatedText = null) {
+    if (!jimengWindow || jimengWindow.isDestroyed()) {
+        return { success: false, error: '请先打开即梦窗口' };
+    }
+
+    if (!files || files.length === 0) {
+        return { success: false, error: '没有素材文件' };
+    }
+
+    log.info(`准备上传 ${files.length} 个素材...`);
+    if (generatedText) {
+        log.info('待填充文案:', generatedText);
+    }
+
+    try {
+        // 获取所有要上传的文件路径
+        const filePaths = files.map(f => f.path);
+        log.info('上传文件列表:', filePaths);
+
+        // 方法1: 使用 debug API (Electron 的 webContents.debugger)
+        // 这是最可靠的方法来设置文件输入
+
+        // 先获取 input 元素的 backendNodeId
+        const inputInfo = await jimengWindow.webContents.executeJavaScript(`
+            (function() {
+                var fileInput = document.querySelector('input.file-input-cYZKvJ') ||
+                               document.querySelector('input[type="file"]');
+                if (fileInput) {
+                    // 触发 focus 以确保元素可交互
+                    fileInput.focus();
+                    return { found: true };
+                }
+                return { found: false };
+            })();
+        `);
+
+        log.info('文件输入框检查:', inputInfo);
+
+        if (!inputInfo.found) {
+            return { success: false, error: '未找到文件输入框' };
+        }
+
+        // 方法2: 使用 CDP (Chrome DevTools Protocol)
+        // 通过 session.protocol 或 webContents.executeJavaScript 配合 File API
+
+        // 尝试使用 Electron 内置的文件上传支持
+        // 通过在页面中创建 File 对象并触发 change 事件
+        const uploadScript = `
+            (function() {
+                var filePaths = ${JSON.stringify(filePaths)};
+                var fileInput = document.querySelector('input.file-input-cYZKvJ') ||
+                               document.querySelector('input[type="file"]');
+
+                if (!fileInput) {
+                    return JSON.stringify({ success: false, error: '未找到文件输入框' });
+                }
+
+                console.log('尝试设置文件:', filePaths);
+
+                // 由于安全限制，无法直接通过 JS 设置 file input 的值
+                // 但在 Electron 中，我们可以通过特定方式实现
+
+                // 返回需要设置的文件路径，让后端通过 CDP 处理
+                return JSON.stringify({
+                    success: true,
+                    message: '需要在后端设置文件',
+                    inputFound: true
+                });
+            })();
+        `;
+
+        const scriptResult = await jimengWindow.webContents.executeJavaScript(uploadScript);
+        log.info('脚本执行结果:', scriptResult);
+
+        // 方法3: 使用 Electron 的 session.protocol 或 webRequest
+        // 最可靠的方式是使用 debugger API
+
+        try {
+            // 启用 debugger
+            const debuggerEnabled = await jimengWindow.webContents.debugger.isAttached();
+            if (!debuggerEnabled) {
+                await jimengWindow.webContents.debugger.attach('1.3');
+            }
+
+            // 获取 document 节点
+            const { root } = await jimengWindow.webContents.debugger.sendCommand('DOM.getDocument');
+
+            // 查找 file input 元素
+            const { nodeIds } = await jimengWindow.webContents.debugger.sendCommand('DOM.querySelectorAll', {
+                nodeId: root.nodeId,
+                selector: 'input[type="file"]'
+            });
+
+            if (nodeIds && nodeIds.length > 0) {
+                log.info('找到 input 元素，nodeId:', nodeIds[0]);
+
+                // 设置文件
+                await jimengWindow.webContents.debugger.sendCommand('DOM.setFileInputFiles', {
+                    nodeId: nodeIds[0],
+                    files: filePaths
+                });
+
+                log.info('CDP 设置文件成功!');
+
+                // 触发 change 事件
+                await jimengWindow.webContents.executeJavaScript(`
+                    (function() {
+                        var fileInput = document.querySelector('input.file-input-cYZKvJ') ||
+                                       document.querySelector('input[type="file"]');
+                        if (fileInput) {
+                            fileInput.dispatchEvent(new Event('change', { bubbles: true }));
+                            console.log('已触发 change 事件');
+                        }
+                    })();
+                `);
+
+                // 分离 debugger
+                // await jimengWindow.webContents.debugger.detach();
+
+                // 如果有文案需要填充，填充到编辑器
+                if (generatedText && generatedText.originalText && generatedText.references) {
+                    await fillPromptToEditor(generatedText.originalText, generatedText.references);
+                }
+
+                return { success: true, count: files.length, files: filePaths };
+            } else {
+                log.error('未找到 file input 节点');
+                return { success: false, error: '未找到 file input 节点' };
+            }
+
+        } catch (debuggerError) {
+            log.error('CDP 方法失败:', debuggerError.message);
+
+            // 如果 debugger 已经 attached，不要重复 attach
+            // 尝试使用简化的方式
+
+            return { success: false, error: '文件上传需要 debugger 支持: ' + debuggerError.message };
+        }
+
+    } catch (error) {
+        log.error('上传素材失败:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * 填充文案到 ProseMirror 编辑器并插入引用
+ * @param {string} originalText - 原始文案
+ * @param {object} references - 引用信息 { "街道转角": "@Image1", "阿俊": "@Image3(@Audio1声音)" }
+ */
+async function fillPromptToEditor(originalText, references) {
+    if (!jimengWindow || jimengWindow.isDestroyed()) {
+        return { success: false, error: '即梦窗口不存在' };
+    }
+
+    log.info('填充文案到编辑器...');
+    log.info('引用信息:', references);
+
+    const fillScript = `
+        (async function() {
+            const originalText = ${JSON.stringify(originalText)};
+            const references = ${JSON.stringify(references)};
+
+            try {
+                // 找到 ProseMirror 编辑器
+                let textInput = document.querySelector('div[contenteditable="true"].ProseMirror') ||
+                               document.querySelector('div[contenteditable="true"]') ||
+                               document.querySelector('textarea');
+
+                if (!textInput) {
+                    return { success: false, error: '未找到文本输入框' };
+                }
+
+                console.log('找到文本输入框，开始填充...');
+                textInput.focus();
+
+                // 先填充原始文案
+                if (textInput.contentEditable === 'true') {
+                    textInput.innerHTML = '';
+                    const p = document.createElement('p');
+                    const span = document.createElement('span');
+                    span.textContent = originalText;
+                    p.appendChild(span);
+                    textInput.appendChild(p);
+                } else {
+                    textInput.value = originalText;
+                }
+
+                // 触发输入事件
+                textInput.dispatchEvent(new Event('input', { bubbles: true }));
+                textInput.dispatchEvent(new Event('change', { bubbles: true }));
+
+                console.log('原始文案已填充');
+
+                // 等待一下
+                await new Promise(r => setTimeout(r, 500));
+
+                // 依次插入引用
+                const refEntries = Object.entries(references);
+
+                for (const [key, ref] of refEntries) {
+                    console.log('插入引用:', key, '->', ref);
+
+                    // 解析 key，判断是否是 _image 或 _audio
+                    const isImageRef = key.endsWith('_image');
+                    const isAudioRef = key.endsWith('_audio');
+                    const baseName = isImageRef || isAudioRef ? key.replace(/_(image|audio)$/, '') : key;
+
+                    // 找到文案中该名称的位置
+                    const walker = document.createTreeWalker(textInput, NodeFilter.SHOW_TEXT, null, false);
+                    let found = false;
+
+                    while (walker.nextNode() && !found) {
+                        const node = walker.currentNode;
+                        const textContent = node.textContent;
+                        const index = textContent.indexOf(baseName);
+
+                        if (index !== -1) {
+                            // 找到了，设置光标位置
+                            const range = document.createRange();
+
+                            if (isAudioRef) {
+                                // 音频引用：放在人物名称后面
+                                range.setStart(node, index + baseName.length);
+                            } else {
+                                // 图片引用：放在人物名称前面
+                                range.setStart(node, index);
+                            }
+                            range.collapse(true);
+
+                            const sel = window.getSelection();
+                            sel.removeAllRanges();
+                            sel.addRange(range);
+
+                            console.log('光标已定位到:', baseName, isAudioRef ? '(后)' : '(前)');
+                            found = true;
+
+                            // 音频引用：先插入左括号，再选择音频，最后插入"声音)"
+                            if (isAudioRef) {
+                                // 先插入 "("
+                                document.execCommand('insertText', false, '(');
+                                await new Promise(r => setTimeout(r, 100));
+
+                                // 点击 @ 按钮打开下拉框
+                                let btnClicked = false;
+                                const allBtns = document.querySelectorAll('button, [role="button"]');
+                                for (const btn of allBtns) {
+                                    const svgPath = btn.querySelector('svg path[d*="M12.81 2.1"]');
+                                    if (svgPath && btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+                                        btn.click();
+                                        console.log('已点击 @ 按钮（音频）');
+                                        btnClicked = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!btnClicked) {
+                                    console.log('未找到 @ 按钮');
+                                    continue;
+                                }
+
+                                // 等待下拉框出现
+                                await new Promise(r => setTimeout(r, 500));
+
+                                // 在下拉框中选择对应的音频选项
+                                const popup = document.querySelector('.lv-select-popup');
+                                if (popup) {
+                                    console.log('找到下拉框（音频）');
+                                    const options = popup.querySelectorAll('li[role="option"].lv-select-option');
+                                    console.log('选项数量:', options.length);
+
+                                    // ref 格式是 (@Audio1声音)，需要提取 Audio1
+                                    const refName = ref.replace('(@', '').replace('声音)', '');
+                                    console.log('需要匹配（音频）:', refName);
+
+                                    let clicked = false;
+                                    for (let i = 0; i < options.length; i++) {
+                                        const opt = options[i];
+                                        const labelEl = opt.querySelector('.option-label-gcSqds, .ellipsis-text-ozkfCQ');
+                                        const text = labelEl ? labelEl.textContent.trim() : opt.textContent.trim();
+                                        console.log('选项[' + i + ']文本:', text);
+
+                                        if (text === refName) {
+                                            console.log('找到匹配选项[' + i + ']，准备点击:', text);
+                                            opt.style.outline = '2px solid red';
+                                            await new Promise(r => setTimeout(r, 300));
+                                            opt.style.outline = '';
+                                            opt.click();
+                                            clicked = true;
+                                            break;
+                                        }
+                                    }
+
+                                    if (!clicked) {
+                                        console.log('未找到匹配选项:', refName);
+                                        document.body.click();
+                                    } else {
+                                        // 等待下拉框消失
+                                        console.log('等待下拉框消失...');
+                                        let waitCount = 0;
+                                        while (waitCount < 20) {
+                                            const popupCheck = document.querySelector('.lv-select-popup');
+                                            if (!popupCheck || popupCheck.style.display === 'none' || popupCheck.offsetParent === null) {
+                                                console.log('下拉框已消失');
+                                                break;
+                                            }
+                                            await new Promise(r => setTimeout(r, 200));
+                                            waitCount++;
+                                        }
+                                        await new Promise(r => setTimeout(r, 300));
+
+                                        // 插入 "声音)"
+                                        document.execCommand('insertText', false, '声音)');
+                                        console.log('已插入音频引用');
+                                    }
+                                } else {
+                                    console.log('未找到下拉框');
+                                }
+                                continue;
+                            }
+
+                            // 图片引用需要点击 @ 按钮打开下拉框
+                            let btnClicked2 = false;
+
+                            // 查找带有 @ 图标的按钮（SVG path 包含特定 d 属性）
+                            const allBtns2 = document.querySelectorAll('button, [role="button"]');
+                            for (const btn of allBtns2) {
+                                const svgPath = btn.querySelector('svg path[d*="M12.81 2.1"]');
+                                if (svgPath && btn.offsetWidth > 0 && btn.offsetHeight > 0) {
+                                    btn.click();
+                                    console.log('已点击 @ 按钮');
+                                    btnClicked2 = true;
+                                    break;
+                                }
+                            }
+
+                            if (!btnClicked2) {
+                                console.log('未找到 @ 按钮');
+                                continue;
+                            }
+
+                            // 等待下拉框出现
+                            await new Promise(r => setTimeout(r, 500));
+
+                            // 在下拉框中选择对应的选项
+                            const popup = document.querySelector('.lv-select-popup');
+                            if (popup) {
+                                console.log('找到下拉框');
+                                const options = popup.querySelectorAll('li[role="option"].lv-select-option');
+                                console.log('选项数量:', options.length);
+
+                                // 需要匹配的名称（去掉@符号）
+                                const refName = ref.replace('@', '');
+                                console.log('需要匹配:', refName);
+
+                                let clicked = false;
+                                for (let i = 0; i < options.length; i++) {
+                                    const opt = options[i];
+                                    const labelEl = opt.querySelector('.option-label-gcSqds, .ellipsis-text-ozkfCQ');
+                                    const text = labelEl ? labelEl.textContent.trim() : opt.textContent.trim();
+                                    console.log('选项[' + i + ']文本:', text);
+
+                                    // 匹配引用名（如 Image1, Image2, Image3, Audio1）
+                                    if (text === refName) {
+                                        console.log('找到匹配选项[' + i + ']，准备点击:', text);
+                                        // 先高亮显示确认
+                                        opt.style.outline = '2px solid red';
+                                        await new Promise(r => setTimeout(r, 300));
+                                        opt.style.outline = '';
+                                        // 点击选项
+                                        opt.click();
+                                        clicked = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!clicked) {
+                                    console.log('未找到匹配选项:', refName);
+                                    // 尝试关闭下拉框
+                                    document.body.click();
+                                } else {
+                                    // 点击成功后，等待下拉框消失
+                                    console.log('等待下拉框消失...');
+                                    let waitCount = 0;
+                                    while (waitCount < 20) {
+                                        const popupCheck = document.querySelector('.lv-select-popup');
+                                        if (!popupCheck || popupCheck.style.display === 'none' || popupCheck.offsetParent === null) {
+                                            console.log('下拉框已消失');
+                                            break;
+                                        }
+                                        await new Promise(r => setTimeout(r, 200));
+                                        waitCount++;
+                                    }
+                                    // 额外等待一下确保稳定
+                                    await new Promise(r => setTimeout(r, 300));
+                                }
+                            } else {
+                                console.log('未找到下拉框');
+                            }
+                        }
+                    }
+
+                    if (!found) {
+                        console.log('未找到文本:', baseName);
+                    }
+                }
+
+                return { success: true, message: '文案和引用已填充' };
+
+            } catch (error) {
+                console.error('填充失败:', error);
+                return { success: false, error: error.message };
+            }
+        })();
+    `;
+
+    try {
+        const result = await jimengWindow.webContents.executeJavaScript(fillScript);
+        log.info('填充文案结果:', result);
+        return result;
+    } catch (error) {
+        log.error('填充文案失败:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * 获取主窗口
+ */
+function getMainWindow() {
+    return mainWindow;
+}
+
+/**
+ * 获取即梦窗口
+ */
+function getJimengWindow() {
+    return jimengWindow;
+}
+
+/**
+ * 关闭即梦窗口
+ */
+function closeJimengWindow() {
+    if (jimengWindow) {
+        jimengWindow.close();
+        jimengWindow = null;
+    }
+}
+
+module.exports = {
+    createMainWindow,
+    createJimengWindow,
+    getMainWindow,
+    getJimengWindow,
+    closeJimengWindow,
+    checkLoginStatus,
+    showLoginQRCode,
+    loginWithEmail,
+    autoHandlePopups,
+    analyzePageStructure,
+    setDefaultGenerateParams,
+    setVideoInterceptedCallback,
+    setApiResponseCallback,
+    uploadMaterials
+};
