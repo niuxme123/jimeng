@@ -15,6 +15,9 @@ let jimengWindow = null;
 let onVideoIntercepted = null;
 let onApiResponse = null;
 
+// 视频去重集合
+let sentVideoUrls = new Set();
+
 /**
  * 设置视频拦截回调
  */
@@ -27,6 +30,23 @@ function setVideoInterceptedCallback(callback) {
  */
 function setApiResponseCallback(callback) {
     onApiResponse = callback;
+}
+
+/**
+ * 发送视频到主窗口（带去重）
+ */
+function sendVideoToMainWindow(video) {
+    // 去重：使用不带查询参数的 URL 作为 key
+    const urlKey = video.url.split('?')[0];
+    if (sentVideoUrls.has(urlKey)) {
+        return false;
+    }
+    sentVideoUrls.add(urlKey);
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('video-intercepted', video);
+    }
+    return true;
 }
 
 /**
@@ -236,9 +256,8 @@ function setupRequestInterceptor(webContents) {
                 onVideoIntercepted(videoInfo);
             }
 
-            if (mainWindow) {
-                mainWindow.webContents.send('video-intercepted', videoInfo);
-            }
+            // 使用去重函数发送
+            sendVideoToMainWindow(videoInfo);
         }
     );
 
@@ -301,12 +320,12 @@ function setupRequestInterceptor(webContents) {
                 const videoInfo = {
                     url: details.url,
                     contentType: contentType,
-                    timestamp: new Date().toISOString()
+                    timestamp: new Date().toISOString(),
+                    source: 'response-header'
                 };
 
-                if (mainWindow) {
-                    mainWindow.webContents.send('video-intercepted', videoInfo);
-                }
+                // 使用去重函数发送
+                sendVideoToMainWindow(videoInfo);
             }
             callback({});
         }
@@ -496,9 +515,8 @@ async function extractVideoInfoFromPage(webContents) {
             });
 
             processedVideos.forEach(video => {
-                if (mainWindow) {
-                    mainWindow.webContents.send('video-intercepted', video);
-                }
+                // 使用去重函数发送
+                sendVideoToMainWindow(video);
             });
 
             return processedVideos;
@@ -2027,11 +2045,9 @@ async function extractVideos() {
         if (videos.length > 0) {
             log.info(`提取到 ${videos.length} 个视频链接`);
 
-            // 同时发送到主窗口
+            // 同时发送到主窗口（使用去重函数）
             videos.forEach(video => {
-                if (mainWindow) {
-                    mainWindow.webContents.send('video-intercepted', video);
-                }
+                sendVideoToMainWindow(video);
             });
 
             return { success: true, count: videos.length, videos };

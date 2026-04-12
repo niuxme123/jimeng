@@ -93,9 +93,26 @@ function registerIpcHandlers() {
         return api.getInterceptedVideos();
     });
 
-    // 下载视频
+    // 下载视频（带保存对话框）
     ipcMain.handle('download-video', async (event, { url, filename }) => {
-        return await tasks.downloadVideo(url, filename, config.downloadDir);
+        const { dialog } = require('electron');
+        const path = require('path');
+
+        // 弹出保存对话框让用户选择保存位置
+        const result = await dialog.showSaveDialog(windows.getMainWindow(), {
+            title: '保存视频',
+            defaultPath: filename || `video_${Date.now()}.mp4`,
+            filters: [
+                { name: '视频文件', extensions: ['mp4', 'webm'] },
+                { name: '所有文件', extensions: ['*'] }
+            ]
+        });
+
+        if (result.canceled || !result.filePath) {
+            return { success: false, canceled: true, error: '用户取消了保存' };
+        }
+
+        return await tasks.downloadVideoToPath(url, result.filePath);
     });
 
     // 打开即梦窗口

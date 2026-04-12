@@ -104,17 +104,24 @@ async function submitVideoTask(taskData) {
  * 支持重定向和多种 URL 格式
  */
 async function downloadVideo(videoUrl, filename, downloadDir) {
+    const path = require('path');
+    const filePath = path.join(downloadDir, filename);
+    return await downloadVideoToPath(videoUrl, filePath);
+}
+
+/**
+ * 下载视频到指定路径
+ * 支持重定向和多种 URL 格式
+ */
+async function downloadVideoToPath(videoUrl, filePath) {
     const fs = require('fs');
     const http = require('http');
     const https = require('https');
-    const path = require('path');
 
     // 确保 URL 是完整的
     if (!videoUrl.startsWith('http://') && !videoUrl.startsWith('https://')) {
         videoUrl = 'https:' + videoUrl;
     }
-
-    const filePath = path.join(downloadDir, filename);
 
     return new Promise((resolve, reject) => {
         const protocol = videoUrl.startsWith('https') ? https : http;
@@ -132,7 +139,7 @@ async function downloadVideo(videoUrl, filename, downloadDir) {
                 const redirectUrl = response.headers.location;
                 if (redirectUrl) {
                     log.info('视频重定向到:', redirectUrl);
-                    downloadVideo(redirectUrl, filename, downloadDir).then(resolve).catch(reject);
+                    downloadVideoToPath(redirectUrl, filePath).then(resolve).catch(reject);
                     return;
                 }
             }
@@ -174,5 +181,6 @@ async function downloadVideo(videoUrl, filename, downloadDir) {
 
 module.exports = {
     submitVideoTask,
-    downloadVideo
+    downloadVideo,
+    downloadVideoToPath
 };

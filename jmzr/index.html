@@ -553,6 +553,8 @@
 
                 if (result.success) {
                     log(`视频下载成功: ${result.path}`, 'success');
+                } else if (result.canceled) {
+                    log('已取消保存', 'warning');
                 } else {
                     log(`视频下载失败: ${result.error}`, 'error');
                 }
@@ -801,9 +803,14 @@
         });
 
         ipcRenderer.on('video-intercepted', (event, video) => {
-            log(`拦截到视频: ${video.url.substring(0, 50)}...`, 'success');
-            interceptedVideos.push(video);
-            updateVideoList();
+            // 前端也做去重
+            const urlKey = video.url.split('?')[0];
+            const exists = interceptedVideos.some(v => v.url.split('?')[0] === urlKey);
+            if (!exists) {
+                log(`拦截到视频: ${video.url.substring(0, 50)}...`, 'success');
+                interceptedVideos.push(video);
+                updateVideoList();
+            }
         });
 
         ipcRenderer.on('api-response', (event, data) => {

@@ -12,6 +12,7 @@ const tasks = require('./tasks');
 const accounts = require('./accounts');
 
 let interceptedVideos = [];
+let seenVideoUrls = new Set(); // 用于去重
 
 /**
  * 创建 API 服务器
@@ -89,10 +90,17 @@ function createApiServer() {
 }
 
 /**
- * 添加拦截的视频
+ * 添加拦截的视频（带去重）
  */
 function addInterceptedVideo(video) {
+    // 去重：检查 URL 是否已存在
+    const urlKey = video.url.split('?')[0]; // 使用不带参数的 URL 作为 key
+    if (seenVideoUrls.has(urlKey)) {
+        return false; // 已存在，不添加
+    }
+    seenVideoUrls.add(urlKey);
     interceptedVideos.push(video);
+    return true;
 }
 
 /**
@@ -107,6 +115,7 @@ function getInterceptedVideos() {
  */
 function clearInterceptedVideos() {
     interceptedVideos = [];
+    seenVideoUrls.clear();
 }
 
 module.exports = {
