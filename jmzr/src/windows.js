@@ -11,6 +11,9 @@ const auth = require('./auth');
 let mainWindow = null;
 let jimengWindow = null;
 
+// 多开窗口管理 - 支持不同账号登录不同的窗口
+let accountWindows = new Map(); // email -> window
+
 // 视频拦截回调
 let onVideoIntercepted = null;
 let onApiResponse = null;
@@ -106,14 +109,28 @@ function createMainWindow(Menu) {
 
 /**
  * 创建即梦网站窗口
+ * @param {string} partition - 可选的 session partition，用于多账号隔离
  */
-function createJimengWindow() {
-    if (jimengWindow) {
+function createJimengWindow(partition = null) {
+    // 如果指定了 partition（多开模式），创建新窗口
+    // 否则检查是否已有默认窗口
+    if (!partition && jimengWindow) {
         jimengWindow.focus();
         return jimengWindow;
     }
 
-    jimengWindow = new BrowserWindow({
+    // 如果是多开模式且该 partition 的窗口已存在，聚焦它
+    if (partition && accountWindows.has(partition)) {
+        const existingWindow = accountWindows.get(partition);
+        if (!existingWindow.isDestroyed()) {
+            existingWindow.focus();
+            return existingWindow;
+        }
+    }
+
+    const windowPartition = partition || 'persist:jimeng';
+
+    const newWindow = new BrowserWindow({
         width: 1400,
         height: 900,
         webPreferences: {
@@ -121,72 +138,38 @@ function createJimengWindow() {
             contextIsolation: true,
             preload: path.join(__dirname, '..', 'preload.js'),
             webSecurity: false,
-            partition: 'persist:jimeng'
+            partition: windowPartition
         },
-        title: '即梦AI - 自动化窗口'
+        title: partition ? `即梦AI - ${partition}` : '即梦AI - 自动化窗口'
     });
 
-    jimengWindow.loadURL(config.currentVersion === 'cn' ? config.targetUrlCN : config.targetUrlIntl);
-    // 不自动打开开发者工具
-    // jimengWindow.webContents.openDevTools();
+    newWindow.loadURL(config.currentVersion === 'cn' ? config.targetUrlCN : config.targetUrlIntl);
 
     // 设置请求拦截
-    setupRequestInterceptor(jimengWindow.webContents);
+    setupRequestInterceptor(newWindow.webContents);
 
-    // 登录状态追踪
-    let isProcessingLogin = false;
-    let loginCheckAttempts = 0;
-    const maxLoginCheckAttempts = 30; // 最多检查30次，每次2秒
-
-    // 页面加载完成后自动处理弹窗和检查登录状态
-    jimengWindow.webContents.on('did-finish-load', () => {
+    // 页面加载完成后自动处理弹窗
+    newWindow.webContents.on('did-finish-load', () => {
         log.info('页面加载完成，检查弹窗...');
-        autoHandlePopups();
-
-        // 延迟检查登录状态（增加到 3 秒，等待页面完全加载）
-        setTimeout(async () => {
-            await checkAndHandleLoginStatus();
-        }, 3000);
+        autoHandlePopupsForWindow(newWindow);
     });
 
-    // 定时检查并处理弹窗
-    setInterval(() => {
-        if (jimengWindow && !jimengWindow.isDestroyed()) {
-            autoHandlePopups();
+    newWindow.on('closed', () => {
+        if (partition) {
+            accountWindows.delete(partition);
+        } else {
+            jimengWindow = null;
         }
-    }, 3000);
-
-    // 定时检查登录状态（每5秒检查一次）
-    setInterval(async () => {
-        if (jimengWindow && !jimengWindow.isDestroyed() && !isProcessingLogin) {
-            const status = await checkLoginStatus();
-
-            // 通知主窗口登录状态
-            if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('login-status-changed', {
-                    isLoggedIn: status.isLoggedIn === true,
-                    username: status.username || null
-                });
-            }
-
-            // 如果检测到新登录，执行参数设置
-            if (status.isLoggedIn) {
-                const savedState = auth.getLoginState();
-                if (!savedState || !savedState.isLoggedIn) {
-                    log.info('检测到新登录，保存状态并设置参数...');
-                    auth.saveLoginState({ isLoggedIn: true, username: status.username });
-                    await auth.saveCookies(jimengWindow);
-                    await setDefaultGenerateParams();
-                }
-            }
-        }
-    }, 5000);
-
-    jimengWindow.on('closed', () => {
-        jimengWindow = null;
     });
 
-    return jimengWindow;
+    // 根据是否是主窗口进行不同处理
+    if (partition) {
+        accountWindows.set(partition, newWindow);
+    } else {
+        jimengWindow = newWindow;
+    }
+
+    return newWindow;
 }
 
 /**
@@ -533,6 +516,14 @@ async function extractVideoInfoFromPage(webContents) {
  */
 async function autoHandlePopups() {
     if (!jimengWindow || jimengWindow.isDestroyed()) return;
+    await autoHandlePopupsForWindow(jimengWindow);
+}
+
+/**
+ * 自动处理指定窗口的弹窗
+ */
+async function autoHandlePopupsForWindow(targetWindow) {
+    if (!targetWindow || targetWindow.isDestroyed()) return;
 
     const popupScript = `
         (function() {
@@ -592,7 +583,7 @@ async function autoHandlePopups() {
     `;
 
     try {
-        const jsonStr = await jimengWindow.webContents.executeJavaScript(popupScript);
+        const jsonStr = await targetWindow.webContents.executeJavaScript(popupScript);
         const result = JSON.parse(jsonStr);
         if (result.handled) {
             log.info('已自动处理弹窗');
@@ -723,11 +714,39 @@ async function checkLoginStatus() {
 
 /**
  * 分析页面元素结构
+ * @param {string} windowId - 可选，指定要分析的窗口（email 或 partition）
  */
-async function analyzePageStructure() {
-    if (!jimengWindow || jimengWindow.isDestroyed()) return;
+async function analyzePageStructure(windowId = null) {
+    let targetWindow = null;
 
-    log.info('分析页面结构...');
+    log.info('分析页面结构请求, windowId:', windowId);
+
+    // 确定要分析的窗口
+    if (windowId && accountWindows && accountWindows.size > 0) {
+        // 查找指定的窗口
+        accountWindows.forEach((win, partition) => {
+            if (partition.includes(windowId) || partition === windowId) {
+                if (win && !win.isDestroyed()) {
+                    targetWindow = win;
+                }
+            }
+        });
+    }
+
+    // 如果没有找到指定窗口，使用主窗口
+    if (!targetWindow) {
+        if (jimengWindow && !jimengWindow.isDestroyed()) {
+            targetWindow = jimengWindow;
+            log.info('使用主窗口');
+        }
+    }
+
+    if (!targetWindow) {
+        log.info('没有可分析的窗口');
+        return null;
+    }
+
+    log.info('分析页面结构... 目标窗口:', windowId || '主窗口');
 
     const analyzeScript = `
         (function() {
@@ -907,7 +926,7 @@ async function analyzePageStructure() {
     `;
 
     try {
-        const jsonStr = await jimengWindow.webContents.executeJavaScript(analyzeScript);
+        const jsonStr = await targetWindow.webContents.executeJavaScript(analyzeScript);
         const result = JSON.parse(jsonStr);
 
         // 保存到文件
@@ -1336,14 +1355,169 @@ async function showLoginQRCode() {
 
 /**
  * 使用邮箱密码登录
- * 参考 dreamina-auto-login.user.js
+ * 每个邮箱使用独立的窗口和 session
+ * @param {string} email - 邮箱账号
+ * @param {string} password - 密码
  */
 async function loginWithEmail(email, password) {
     log.info(`开始邮箱登录: ${email}...`);
 
-    if (!jimengWindow || jimengWindow.isDestroyed()) {
-        createJimengWindow();
-        await new Promise(resolve => setTimeout(resolve, 3000));
+    // 为每个邮箱创建独立的 session partition
+    // 不使用 persist: 前缀，这样每次都是全新的临时 session
+    const partition = `jimeng_${email.replace(/[^a-zA-Z0-9]/g, '_')}`;
+
+    // 检查是否已有该账号的窗口
+    let targetWindow = accountWindows.get(partition);
+
+    if (targetWindow && !targetWindow.isDestroyed()) {
+        log.info(`账号 ${email} 的窗口已存在，聚焦窗口`);
+        targetWindow.focus();
+        return { success: true, message: '窗口已存在', email };
+    }
+
+    // 创建新窗口
+    targetWindow = new BrowserWindow({
+        width: 1400,
+        height: 900,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, '..', 'preload.js'),
+            webSecurity: false,
+            partition: partition
+        },
+        title: `即梦AI - ${email}`
+    });
+
+    targetWindow.loadURL(config.currentVersion === 'cn' ? config.targetUrlCN : config.targetUrlIntl);
+
+    // 设置请求拦截
+    setupRequestInterceptor(targetWindow.webContents);
+
+    // 页面加载完成后设置标题并处理弹窗
+    targetWindow.webContents.on('did-finish-load', () => {
+        // 强制设置窗口标题
+        targetWindow.setTitle(`即梦AI - ${email}`);
+        log.info(`页面加载完成 [${email}]，检查弹窗...`);
+        autoHandlePopupsForWindow(targetWindow);
+    });
+
+    // 页面标题变化时重新设置
+    targetWindow.on('page-title-updated', (event) => {
+        event.preventDefault();
+        targetWindow.setTitle(`即梦AI - ${email}`);
+    });
+
+    targetWindow.on('closed', () => {
+        accountWindows.delete(partition);
+        log.info(`账号 ${email} 的窗口已关闭`);
+    });
+
+    // 保存到账号窗口映射
+    accountWindows.set(partition, targetWindow);
+
+    // 等待页面加载完成
+    await new Promise(resolve => {
+        targetWindow.webContents.once('did-finish-load', resolve);
+        // 超时保护
+        setTimeout(resolve, 15000);
+    });
+
+    // 等待页面渲染完成 - 增加到5秒
+    log.info('等待页面渲染...');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
+    // 等待 Sign in 按钮出现（最多等待10秒）
+    log.info('等待 Sign in 按钮出现...');
+    let retryCount = 0;
+    const maxRetries = 10;
+    while (retryCount < maxRetries) {
+        const hasSignIn = await targetWindow.webContents.executeJavaScript(`
+            (function() {
+                var items = document.querySelectorAll('.lv-menu-item');
+                for (var i = 0; i < items.length; i++) {
+                    if (items[i].textContent.trim() === 'Sign in') {
+                        return true;
+                    }
+                }
+                return false;
+            })();
+        `);
+
+        if (hasSignIn) {
+            log.info('Sign in 按钮已出现');
+            break;
+        }
+
+        retryCount++;
+        log.info(`等待 Sign in 按钮... (${retryCount}/${maxRetries})`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    // 先分析页面元素，用于调试
+    const debugScript = `
+        (function() {
+            var info = {
+                url: window.location.href,
+                title: document.title,
+                buttons: [],
+                menuItems: [],
+                signInButton: null,
+                hasCreditDisplay: false,
+                creditText: ''
+            };
+
+            // 收集所有 .lv-menu-item 菜单项
+            document.querySelectorAll('.lv-menu-item').forEach(function(item) {
+                var text = (item.textContent || '').trim();
+                if (text && item.offsetWidth > 0) {
+                    info.menuItems.push(text);
+                    // 查找 Sign in 按钮
+                    if (text === 'Sign in' || text === '登录' || text === '報名') {
+                        info.signInButton = {
+                            text: text,
+                            className: item.className,
+                            found: true
+                        };
+                    }
+                }
+            });
+
+            // 检查是否有积分显示（已登录状态）
+            document.querySelectorAll('.lv-menu-item').forEach(function(item) {
+                var text = (item.textContent || '').trim();
+                if (/^[0-9]+Upgrade/i.test(text) || (text.includes('Upgrade') && text.length < 20)) {
+                    info.hasCreditDisplay = true;
+                    info.creditText = text;
+                }
+            });
+
+            return JSON.stringify(info);
+        })();
+    `;
+
+    try {
+        const debugInfo = await targetWindow.webContents.executeJavaScript(debugScript);
+        const pageInfo = JSON.parse(debugInfo);
+        log.info('=== 页面调试信息 ===');
+        log.info('URL:', pageInfo.url);
+        log.info('菜单项:', pageInfo.menuItems);
+        log.info('Sign in 按钮:', pageInfo.signInButton);
+        log.info('积分显示:', pageInfo.hasCreditDisplay ? pageInfo.creditText : '无');
+
+        // 发送到主窗口显示
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('debug-info', {
+                url: pageInfo.url,
+                title: pageInfo.title,
+                menuItems: pageInfo.menuItems,
+                signInButton: pageInfo.signInButton,
+                hasCreditDisplay: pageInfo.hasCreditDisplay,
+                creditText: pageInfo.creditText
+            });
+        }
+    } catch (e) {
+        log.error('获取页面调试信息失败:', e);
     }
 
     const loginScript = `
@@ -1353,16 +1527,16 @@ async function loginWithEmail(email, password) {
             }
 
             try {
-                // 步骤1：点击登录按钮
+                // 步骤1：点击登录按钮（参照油猴脚本）
                 console.log('步骤1: 点击登录按钮...');
                 let loginButton = document.querySelector('div[class*="login-button-"]') ||
                                  document.querySelector('.login-button');
 
+                // 如果通过class没找到，尝试通过文本内容查找
                 if (!loginButton) {
                     const allDivs = document.querySelectorAll('div');
                     for (const div of allDivs) {
-                        const text = div.textContent ? div.textContent.trim() : '';
-                        if (text === 'Sign in' || text === '登录') {
+                        if (div.textContent && (div.textContent.trim() === 'Sign in' || div.textContent.trim() === '登录')) {
                             loginButton = div;
                             break;
                         }
@@ -1371,59 +1545,112 @@ async function loginWithEmail(email, password) {
 
                 if (loginButton) {
                     loginButton.click();
+                    console.log('已点击登录按钮');
                     await sleep(1000);
                 }
 
-                // 步骤2：点击邮箱登录选项
-                console.log('步骤2: 查找邮箱登录选项...');
+                // 步骤2：等待邮箱登录选项出现并点击
+                console.log('步骤2: 等待邮箱登录选项...');
                 await sleep(500);
 
                 let emailLogin = null;
+
+                // 方法1：通过完整的wrapper结构查找（参照油猴脚本）
                 const wrappers = document.querySelectorAll('.lv_new_third_part_sign_in_expand-wrapper');
+                console.log('找到 ' + wrappers.length + ' 个登录选项wrapper');
 
                 for (const wrapper of wrappers) {
                     const button = wrapper.querySelector('.lv_new_third_part_sign_in_expand-button');
                     if (button) {
                         const span = button.querySelector('.lv_new_third_part_sign_in_expand-label');
                         const spanText = span ? span.textContent.trim() : '';
+                        console.log('检查wrapper中的按钮文本: "' + spanText + '"');
 
                         if (spanText === '使用電子郵件繼續' || spanText === '使用电子邮件继续' || spanText === 'Continue with email') {
                             emailLogin = button;
+                            console.log('✓ 通过精确文本匹配找到邮箱登录按钮');
                             break;
                         }
                     }
                 }
 
-                // 备用方案：直接查找按钮
+                // 方法2：直接查找按钮
                 if (!emailLogin) {
                     const loginButtons = document.querySelectorAll('.lv_new_third_part_sign_in_expand-button');
+                    console.log('备用方案：找到 ' + loginButtons.length + ' 个登录按钮');
+
                     for (const button of loginButtons) {
                         const span = button.querySelector('.lv_new_third_part_sign_in_expand-label');
                         const spanText = span ? span.textContent.trim() : '';
+                        console.log('检查按钮文本: "' + spanText + '"');
 
                         if (spanText === '使用電子郵件繼續' || spanText === '使用电子邮件继续' || spanText === 'Continue with email') {
                             emailLogin = button;
+                            console.log('✓ 通过备用方案找到邮箱登录按钮');
                             break;
+                        }
+
+                        // 排除Google登录
+                        if (spanText.includes('Google') || spanText.includes('谷歌')) {
+                            console.log('✗ 跳过Google登录按钮');
+                            continue;
+                        }
+                    }
+                }
+
+                // 方法3：通过span标签的文本内容查找
+                if (!emailLogin) {
+                    console.log('尝试通过span标签查找邮箱登录按钮...');
+                    const allButtons = document.querySelectorAll('.lv_new_third_part_sign_in_expand-button');
+                    for (const button of allButtons) {
+                        const span = button.querySelector('.lv_new_third_part_sign_in_expand-label');
+                        if (span) {
+                            const spanText = span.textContent || '';
+                            console.log('检查span文本: "' + spanText + '"');
+
+                            if (spanText.includes('使用電子郵件繼續') ||
+                                spanText.includes('使用电子邮件继续') ||
+                                spanText.includes('Continue with email') ||
+                                spanText.includes('電子郵件') ||
+                                spanText.includes('电子邮件') ||
+                                spanText.includes('email')) {
+                                if (!spanText.includes('Google') && !spanText.includes('谷歌')) {
+                                    emailLogin = button;
+                                    console.log('通过span文本找到邮箱登录按钮');
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
 
                 if (!emailLogin) {
-                    return JSON.stringify({ success: false, error: '未找到邮箱登录选项' });
+                    // 调试信息
+                    console.log('=== 调试信息：所有登录按钮 ===');
+                    const allButtons = document.querySelectorAll('.lv_new_third_part_sign_in_expand-button');
+                    allButtons.forEach(function(btn, index) {
+                        const text = btn.textContent || '';
+                        const span = btn.querySelector('.lv_new_third_part_sign_in_expand-label');
+                        const spanText = span ? span.textContent : '';
+                        console.log('按钮' + (index + 1) + ': 完整文本="' + text + '", span文本="' + spanText + '"');
+                    });
+                    return JSON.stringify({ success: false, error: '无法找到邮箱登录选项' });
                 }
 
                 emailLogin.click();
+                console.log('已点击邮箱登录');
                 await sleep(1500);
 
-                // 步骤3：填充邮箱
-                console.log('步骤3: 填充邮箱...');
+                // 步骤3：填充邮箱账号（参照油猴脚本，使用 React 方式）
+                console.log('步骤3: 填充邮箱地址...');
                 let emailInput = document.querySelector('input[placeholder*="電子郵件"]') ||
                                 document.querySelector('input[placeholder*="email"]') ||
                                 document.querySelector('input[type="email"]') ||
                                 document.querySelector('input[placeholder*="邮件"]');
 
                 if (!emailInput) {
-                    emailInput = document.querySelector('input[name*="email"]') ||
+                    emailInput = document.querySelector('input[type="email"]') ||
+                                document.querySelector('input[name*="email"]') ||
                                 document.querySelector('input[id*="email"]');
                 }
 
@@ -1431,14 +1658,12 @@ async function loginWithEmail(email, password) {
                     return JSON.stringify({ success: false, error: '未找到邮箱输入框' });
                 }
 
-                console.log('邮箱输入框:', emailInput.placeholder);
-
-                // 使用 React 的方式填充值
+                // 使用 React 的方式填充值（防止被清空）
                 var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
                 nativeInputValueSetter.call(emailInput, '${email}');
                 emailInput.dispatchEvent(new Event('input', { bubbles: true }));
                 emailInput.dispatchEvent(new Event('change', { bubbles: true }));
-                await sleep(500);
+                console.log('已填充邮箱地址');
 
                 // 步骤4：填充密码
                 console.log('步骤4: 填充密码...');
@@ -1454,62 +1679,38 @@ async function loginWithEmail(email, password) {
                     return JSON.stringify({ success: false, error: '未找到密码输入框' });
                 }
 
-                console.log('密码输入框找到');
-
-                // 使用 React 的方式填充值
+                // 使用 React 的方式填充值（防止被清空）
                 nativeInputValueSetter.call(passwordInput, '${password}');
                 passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
                 passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
+                console.log('已填充密码');
+
                 await sleep(500);
 
-                // 步骤5：点击继续按钮
+                // 步骤5：点击继续按钮（参照油猴脚本的精确选择器）
                 console.log('步骤5: 点击继续按钮...');
-
-                // 等待按钮可用
-                await sleep(500);
-
-                // 使用文档中的精确选择器
                 let continueButton = document.querySelector('button.lv_new_sign_in_panel_wide-sign-in-button.lv_new_sign_in_panel_wide-primary-button');
 
-                console.log('Continue按钮查找结果:', continueButton ? '找到' : '未找到');
-
-                if (continueButton) {
-                    console.log('按钮文本:', continueButton.textContent);
-                    console.log('按钮disabled状态:', continueButton.disabled);
-                    console.log('按钮className:', continueButton.className);
-
-                    // 确保按钮没有被禁用
-                    if (continueButton.disabled) {
-                        console.log('按钮被禁用，等待...');
-                        await sleep(1000);
-                    }
-
-                    continueButton.click();
-                    console.log('已点击Continue按钮');
-                    await sleep(1000);
-
-                    return JSON.stringify({ success: true, message: '登录请求已提交' });
-                }
-
-                // 备用方案：通过文本查找
-                const buttons = document.querySelectorAll('button');
-                for (const btn of buttons) {
-                    const text = (btn.textContent || '').trim();
-                    console.log('检查按钮:', text);
-                    if (text === 'Continue' || text === '继续' || text === '登錄' || text === '登录' || text === 'Sign in') {
-                        btn.click();
-                        await sleep(1000);
-                        return JSON.stringify({ success: true, message: '登录请求已提交' });
+                if (!continueButton) {
+                    // 备用方案：通过文本查找
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const text = (btn.textContent || '').trim();
+                        if (text === 'Continue' || text === '继续' || text === '登錄' || text === '登录' || text === 'Sign in') {
+                            continueButton = btn;
+                            break;
+                        }
                     }
                 }
 
-                // 列出所有按钮用于调试
-                console.log('=== 所有按钮列表 ===');
-                document.querySelectorAll('button').forEach(function(b, i) {
-                    console.log('按钮' + i + ':', b.textContent, b.className, 'disabled:', b.disabled);
-                });
+                if (!continueButton) {
+                    return JSON.stringify({ success: false, error: '未找到Continue按钮' });
+                }
 
-                return JSON.stringify({ success: false, error: '未找到继续按钮' });
+                continueButton.click();
+                console.log('已点击Continue按钮');
+
+                return JSON.stringify({ success: true, message: '登录请求已提交' });
 
             } catch (error) {
                 return JSON.stringify({ success: false, error: error.message });
@@ -1518,58 +1719,362 @@ async function loginWithEmail(email, password) {
     `;
 
     try {
-        const jsonStr = await jimengWindow.webContents.executeJavaScript(loginScript);
+        const jsonStr = await targetWindow.webContents.executeJavaScript(loginScript);
         const result = JSON.parse(jsonStr);
         log.info('邮箱登录结果:', result);
 
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('login-result', result);
+            mainWindow.webContents.send('login-result', { ...result, email, windowId: partition });
         }
 
         // 如果登录请求已提交，等待登录完成并设置参数
         if (result.success) {
             log.info('登录请求已提交，等待登录完成...');
-            // 等待登录完成（最多等待30秒）
+
+            // 等待登录完成（检测积分显示出现）
             let loginCheckCount = 0;
-            const checkLogin = async () => {
+            const maxChecks = 30; // 最多检查30次，每次2秒
+
+            const checkLoginComplete = async () => {
                 loginCheckCount++;
-                if (loginCheckCount > 15) {
-                    log.info('登录检查超时');
-                    return;
-                }
 
-                await new Promise(r => setTimeout(r, 2000));
-                const status = await checkLoginStatus();
-                log.info(`登录状态检查(${loginCheckCount}):`, status);
+                const loginStatus = await targetWindow.webContents.executeJavaScript(`
+                    (function() {
+                        var items = document.querySelectorAll('.lv-menu-item');
+                        for (var i = 0; i < items.length; i++) {
+                            var text = items[i].textContent.trim();
+                            // 检测积分显示（如 "50Upgrade"）
+                            if (/^[0-9]+Upgrade/i.test(text)) {
+                                return { isLoggedIn: true, credit: text };
+                            }
+                        }
+                        // 检测是否还有 Sign in 按钮
+                        for (var i = 0; i < items.length; i++) {
+                            var text = items[i].textContent.trim();
+                            if (text === 'Sign in') {
+                                return { isLoggedIn: false };
+                            }
+                        }
+                        return { isLoggedIn: false, unknown: true };
+                    })();
+                `);
 
-                if (status.isLoggedIn) {
-                    log.info('登录成功，保存状态并设置参数...');
-                    auth.saveLoginState({ isLoggedIn: true, username: status.username });
-                    await auth.saveCookies(jimengWindow);
+                log.info(`登录状态检查(${loginCheckCount}/${maxChecks}):`, loginStatus);
+
+                if (loginStatus.isLoggedIn) {
+                    log.info('登录成功！开始设置默认参数...');
 
                     // 通知主窗口
                     if (mainWindow && !mainWindow.isDestroyed()) {
                         mainWindow.webContents.send('login-status-changed', {
                             isLoggedIn: true,
-                            username: status.username || null
+                            email: email,
+                            windowId: partition
                         });
                     }
 
                     // 设置默认参数
-                    await setDefaultGenerateParams();
+                    await setDefaultGenerateParamsForWindow(targetWindow);
+                    return;
+                }
+
+                if (loginCheckCount < maxChecks) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    await checkLoginComplete();
                 } else {
-                    // 继续检查
-                    await checkLogin();
+                    log.info('登录检查超时，请手动确认登录状态');
                 }
             };
 
             // 开始检查登录状态
-            setTimeout(checkLogin, 3000);
+            setTimeout(checkLoginComplete, 3000);
+        }
+
+        return { ...result, windowId: partition, email };
+    } catch (error) {
+        log.error('邮箱登录失败:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * 为指定窗口设置默认生成参数
+ */
+async function setDefaultGenerateParamsForWindow(targetWindow) {
+    if (!targetWindow || targetWindow.isDestroyed()) return;
+
+    log.info('设置默认生成参数...');
+
+    // 延迟等待页面完全渲染
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    const paramsScript = `
+        (async function() {
+            var results = [];
+
+            async function sleep(ms) {
+                return new Promise(function(r) { setTimeout(r, ms); });
+            }
+
+            try {
+                // ========== 1. 选择 "AI Video" 模式 ==========
+                console.log('步骤1: 选择 AI Video 模式...');
+                var currentModeLabel = document.querySelector('.lv-select-view-value');
+                var currentMode = currentModeLabel ? (currentModeLabel.textContent || '').trim() : '';
+                console.log('当前模式:', currentMode);
+
+                if (currentMode !== 'AI Video') {
+                    var modeSelect = document.querySelector('.lv-select.lv-select-single.branded-ttZCKU') ||
+                                     document.querySelector('.toolbar-select-OO8YBx');
+                    if (modeSelect) {
+                        modeSelect.click();
+                        await sleep(800);
+                    }
+
+                    var allOptions = document.querySelectorAll('.lv-select-option');
+                    console.log('找到选项数量:', allOptions.length);
+                    var found = false;
+                    for (var i = 0; i < allOptions.length; i++) {
+                        var opt = allOptions[i];
+                        var text = (opt.textContent || '').trim();
+                        console.log('选项文本:', text);
+                        if (text === 'AI Video') {
+                            opt.click();
+                            await sleep(2000);
+                            results.push({ label: '生成模式', success: true, value: 'AI Video' });
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found) {
+                        results.push({ label: '生成模式', success: false, error: '未找到 AI Video 选项' });
+                    }
+                } else {
+                    results.push({ label: '生成模式', success: true, value: '已是 AI Video 模式' });
+                }
+
+                // ========== 2. 选择 "Omni reference" ==========
+                await sleep(1000);
+                console.log('步骤2: 选择 Omni reference...');
+
+                var refSelectors = document.querySelectorAll('.lv-select.lv-select-single');
+                var refSelect = null;
+
+                for (var i = 0; i < refSelectors.length; i++) {
+                    var sel = refSelectors[i];
+                    var text = (sel.textContent || '').trim();
+                    console.log('参考选择器文本:', text);
+                    if (text.indexOf('First and last frames') >= 0 || text.indexOf('Omni reference') >= 0) {
+                        refSelect = sel;
+                        break;
+                    }
+                }
+
+                if (refSelect) {
+                    var currentRef = (refSelect.textContent || '').trim();
+                    console.log('当前参考模式:', currentRef);
+                    if (currentRef.indexOf('Omni reference') < 0) {
+                        refSelect.click();
+                        await sleep(800);
+
+                        var foundRef = false;
+                        var refOptions = document.querySelectorAll('.lv-select-option');
+
+                        for (var i = 0; i < refOptions.length; i++) {
+                            var opt = refOptions[i];
+                            var text = (opt.textContent || '').trim();
+                            console.log('参考选项:', text);
+                            if (text.indexOf('Omni reference') >= 0) {
+                                opt.click();
+                                await sleep(800);
+                                results.push({ label: '全能参考', success: true, value: 'Omni reference' });
+                                foundRef = true;
+                                break;
+                            }
+                        }
+
+                        if (!foundRef) {
+                            document.body.click();
+                            results.push({ label: '全能参考', success: false, error: '未找到 Omni reference 选项' });
+                        }
+                    } else {
+                        results.push({ label: '全能参考', success: true, value: '已是 Omni reference' });
+                    }
+                }
+
+                // ========== 3. 选择模型 Seedance 2.0 Fast ==========
+                await sleep(800);
+                console.log('步骤3: 选择模型...');
+
+                var modelSelectors = document.querySelectorAll('.lv-select.lv-select-single');
+                var modelSelect = null;
+
+                for (var i = 0; i < modelSelectors.length; i++) {
+                    var sel = modelSelectors[i];
+                    var text = (sel.textContent || '').trim();
+                    if (text.indexOf('Seedance') >= 0) {
+                        modelSelect = sel;
+                        break;
+                    }
+                }
+
+                if (modelSelect) {
+                    var currentModel = (modelSelect.textContent || '').trim();
+                    if (currentModel.indexOf('Seedance 2.0 Fast') >= 0 && currentModel.indexOf('VIP') < 0) {
+                        results.push({ label: '模型', success: true, value: '已是 Seedance 2.0 Fast' });
+                    } else {
+                        modelSelect.click();
+                        await sleep(800);
+
+                        var foundModel = false;
+                        var modelOptions = document.querySelectorAll('.lv-select-option');
+
+                        for (var i = 0; i < modelOptions.length; i++) {
+                            var opt = modelOptions[i];
+                            var text = (opt.textContent || '').trim();
+                            if (text.indexOf('Seedance 2.0 Fast') >= 0 && text.indexOf('VIP') < 0) {
+                                opt.click();
+                                await sleep(800);
+                                results.push({ label: '模型', success: true, value: 'Seedance 2.0 Fast' });
+                                foundModel = true;
+                                break;
+                            }
+                        }
+
+                        if (!foundModel) {
+                            document.body.click();
+                            results.push({ label: '模型', success: false, error: '未找到 Seedance 2.0 Fast 选项' });
+                        }
+                    }
+                }
+
+                // ========== 4. 设置比例 9:16 ==========
+                await sleep(800);
+                console.log('步骤4: 设置比例 9:16...');
+
+                var ratioButton = document.querySelector('.toolbar-button-atztV1');
+                if (!ratioButton) {
+                    var allButtons = document.querySelectorAll('button');
+                    for (var i = 0; i < allButtons.length; i++) {
+                        var text = (allButtons[i].textContent || '').trim();
+                        if (text === '16:9' || text === '9:16' || text === '1:1') {
+                            ratioButton = allButtons[i];
+                            break;
+                        }
+                    }
+                }
+
+                if (ratioButton) {
+                    var currentRatio = (ratioButton.textContent || '').trim();
+                    if (currentRatio !== '9:16') {
+                        ratioButton.click();
+                        await sleep(800);
+
+                        var found916 = false;
+                        var popover = document.querySelector('.lv-popover');
+                        if (popover) {
+                            var items = popover.querySelectorAll('div, span, button, li');
+                            for (var i = 0; i < items.length; i++) {
+                                if (items[i].textContent.trim() === '9:16') {
+                                    items[i].click();
+                                    await sleep(500);
+                                    results.push({ label: '比例', success: true, value: '9:16' });
+                                    found916 = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!found916) {
+                            var allItems = document.querySelectorAll('[class*="option"], [class*="item"], button, div[role="button"]');
+                            for (var i = 0; i < allItems.length; i++) {
+                                if (allItems[i].textContent.trim() === '9:16') {
+                                    allItems[i].click();
+                                    await sleep(500);
+                                    results.push({ label: '比例', success: true, value: '9:16' });
+                                    found916 = true;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!found916) {
+                            document.body.click();
+                            results.push({ label: '比例', success: false, error: '未找到 9:16 选项' });
+                        }
+                    } else {
+                        results.push({ label: '比例', success: true, value: '已是 9:16' });
+                    }
+                }
+
+                // ========== 5. 设置时长 15s ==========
+                await sleep(800);
+                console.log('步骤5: 设置时长 15s...');
+
+                var durationSelectors = document.querySelectorAll('.lv-select.lv-select-single');
+                var durationSelect = null;
+
+                for (var i = 0; i < durationSelectors.length; i++) {
+                    var text = (durationSelectors[i].textContent || '').trim();
+                    if ((text === '5s' || text === '10s' || text === '15s' || /^[0-9]+s$/.test(text)) &&
+                        text.indexOf('Seedance') < 0 && text.indexOf('Omni') < 0) {
+                        durationSelect = durationSelectors[i];
+                        break;
+                    }
+                }
+
+                if (durationSelect) {
+                    var currentDuration = (durationSelect.textContent || '').trim();
+                    if (currentDuration !== '15s') {
+                        durationSelect.click();
+                        await sleep(800);
+
+                        var durationOptions = document.querySelectorAll('.lv-select-option');
+                        for (var i = 0; i < durationOptions.length; i++) {
+                            var text = (durationOptions[i].textContent || '').trim();
+                            if (text === '15s' || text === '15') {
+                                durationOptions[i].click();
+                                await sleep(500);
+                                results.push({ label: '时长', success: true, value: '15s' });
+                                break;
+                            }
+                        }
+                    } else {
+                        results.push({ label: '时长', success: true, value: '已是 15s' });
+                    }
+                }
+
+                console.log('参数设置完成:', results);
+                return JSON.stringify({ success: true, results: results });
+            } catch (e) {
+                console.error('参数设置错误:', e);
+                return JSON.stringify({ success: false, results: results, error: e.message });
+            }
+        })();
+    `;
+
+    try {
+        const jsonStr = await targetWindow.webContents.executeJavaScript(paramsScript);
+        const result = JSON.parse(jsonStr);
+
+        if (result.results) {
+            result.results.forEach(function(r) {
+                if (r.success) {
+                    log.info('[参数] ' + r.label + ': ' + r.value + ' ✓');
+                } else {
+                    log.info('[参数] ' + r.label + ': ' + r.error + ' ✗');
+                }
+            });
+        }
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('params-set', result);
         }
 
         return result;
     } catch (error) {
-        log.error('邮箱登录失败:', error);
+        log.error('设置参数失败:', error);
         return { success: false, error: error.message };
     }
 }
@@ -1578,8 +2083,29 @@ async function loginWithEmail(email, password) {
  * 上传素材到页面
  * 使用 Chrome DevTools Protocol (CDP) 来设置文件
  */
-async function uploadMaterials(files, generatedText = null) {
-    if (!jimengWindow || jimengWindow.isDestroyed()) {
+async function uploadMaterials(files, generatedText = null, windowId = null) {
+    log.info(`uploadMaterials 调用: windowId=${windowId}, accountWindows.size=${accountWindows.size}`);
+
+    // 打印所有已打开的窗口
+    if (accountWindows.size > 0) {
+        for (const [partition, win] of accountWindows) {
+            log.info(`  - 窗口: ${partition}, isDestroyed=${win ? win.isDestroyed() : 'null'}`);
+        }
+    }
+
+    // 确定目标窗口 - 使用 getAccountWindow 函数
+    let targetWindow = getAccountWindow(windowId);
+    log.info(`getAccountWindow 结果: ${targetWindow ? '找到窗口' : '未找到窗口'}`);
+
+    // 如果没找到指定窗口，使用主窗口
+    if (!targetWindow) {
+        if (jimengWindow && !jimengWindow.isDestroyed()) {
+            targetWindow = jimengWindow;
+            log.info('使用主窗口 jimengWindow');
+        }
+    }
+
+    if (!targetWindow || targetWindow.isDestroyed()) {
         return { success: false, error: '请先打开即梦窗口' };
     }
 
@@ -1587,7 +2113,7 @@ async function uploadMaterials(files, generatedText = null) {
         return { success: false, error: '没有素材文件' };
     }
 
-    log.info(`准备上传 ${files.length} 个素材...`);
+    log.info(`准备上传 ${files.length} 个素材到窗口: ${windowId || '主窗口'}`);
     if (generatedText) {
         log.info('待填充文案:', generatedText);
     }
@@ -1601,7 +2127,7 @@ async function uploadMaterials(files, generatedText = null) {
         // 这是最可靠的方法来设置文件输入
 
         // 先获取 input 元素的 backendNodeId
-        const inputInfo = await jimengWindow.webContents.executeJavaScript(`
+        const inputInfo = await targetWindow.webContents.executeJavaScript(`
             (function() {
                 var fileInput = document.querySelector('input.file-input-cYZKvJ') ||
                                document.querySelector('input[type="file"]');
@@ -1649,7 +2175,7 @@ async function uploadMaterials(files, generatedText = null) {
             })();
         `;
 
-        const scriptResult = await jimengWindow.webContents.executeJavaScript(uploadScript);
+        const scriptResult = await targetWindow.webContents.executeJavaScript(uploadScript);
         log.info('脚本执行结果:', scriptResult);
 
         // 方法3: 使用 Electron 的 session.protocol 或 webRequest
@@ -1657,16 +2183,16 @@ async function uploadMaterials(files, generatedText = null) {
 
         try {
             // 启用 debugger
-            const debuggerEnabled = await jimengWindow.webContents.debugger.isAttached();
+            const debuggerEnabled = await targetWindow.webContents.debugger.isAttached();
             if (!debuggerEnabled) {
-                await jimengWindow.webContents.debugger.attach('1.3');
+                await targetWindow.webContents.debugger.attach('1.3');
             }
 
             // 获取 document 节点
-            const { root } = await jimengWindow.webContents.debugger.sendCommand('DOM.getDocument');
+            const { root } = await targetWindow.webContents.debugger.sendCommand('DOM.getDocument');
 
             // 查找 file input 元素
-            const { nodeIds } = await jimengWindow.webContents.debugger.sendCommand('DOM.querySelectorAll', {
+            const { nodeIds } = await targetWindow.webContents.debugger.sendCommand('DOM.querySelectorAll', {
                 nodeId: root.nodeId,
                 selector: 'input[type="file"]'
             });
@@ -1675,7 +2201,7 @@ async function uploadMaterials(files, generatedText = null) {
                 log.info('找到 input 元素，nodeId:', nodeIds[0]);
 
                 // 设置文件
-                await jimengWindow.webContents.debugger.sendCommand('DOM.setFileInputFiles', {
+                await targetWindow.webContents.debugger.sendCommand('DOM.setFileInputFiles', {
                     nodeId: nodeIds[0],
                     files: filePaths
                 });
@@ -1683,7 +2209,7 @@ async function uploadMaterials(files, generatedText = null) {
                 log.info('CDP 设置文件成功!');
 
                 // 触发 change 事件
-                await jimengWindow.webContents.executeJavaScript(`
+                await targetWindow.webContents.executeJavaScript(`
                     (function() {
                         var fileInput = document.querySelector('input.file-input-cYZKvJ') ||
                                        document.querySelector('input[type="file"]');
@@ -1694,12 +2220,14 @@ async function uploadMaterials(files, generatedText = null) {
                     })();
                 `);
 
-                // 分离 debugger
-                // await jimengWindow.webContents.debugger.detach();
-
                 // 如果有文案需要填充，填充到编辑器
                 if (generatedText && generatedText.originalText && generatedText.references) {
-                    await fillPromptToEditor(generatedText.originalText, generatedText.references);
+                    log.info(`准备填充文案，targetWindow=${targetWindow ? '有效' : 'null'}, isDestroyed=${targetWindow ? targetWindow.isDestroyed() : 'N/A'}`);
+                    if (!targetWindow || targetWindow.isDestroyed()) {
+                        log.error('targetWindow 无效，无法填充文案');
+                    } else {
+                        await fillPromptToEditor(generatedText.originalText, generatedText.references, targetWindow);
+                    }
                 }
 
                 return { success: true, count: files.length, files: filePaths };
@@ -1728,8 +2256,13 @@ async function uploadMaterials(files, generatedText = null) {
  * @param {string} originalText - 原始文案
  * @param {object} references - 引用信息 { "街道转角": "@Image1", "阿俊": "@Image3(@Audio1声音)" }
  */
-async function fillPromptToEditor(originalText, references) {
-    if (!jimengWindow || jimengWindow.isDestroyed()) {
+async function fillPromptToEditor(originalText, references, targetWindow = null) {
+    // 如果没有指定窗口，使用主窗口
+    if (!targetWindow) {
+        targetWindow = jimengWindow;
+    }
+
+    if (!targetWindow || targetWindow.isDestroyed()) {
         return { success: false, error: '即梦窗口不存在' };
     }
 
@@ -1995,7 +2528,7 @@ async function fillPromptToEditor(originalText, references) {
     `;
 
     try {
-        const result = await jimengWindow.webContents.executeJavaScript(fillScript);
+        const result = await targetWindow.webContents.executeJavaScript(fillScript);
         log.info('填充文案结果:', result);
         return result;
     } catch (error) {
@@ -2061,6 +2594,77 @@ async function extractVideos() {
     }
 }
 
+/**
+ * 获取所有账号窗口（多开支持）
+ */
+function getAccountWindows() {
+    const windows = {};
+    accountWindows.forEach((window, partition) => {
+        if (!window.isDestroyed()) {
+            windows[partition] = window;
+        }
+    });
+    return windows;
+}
+
+/**
+ * 根据窗口ID获取单个账号窗口
+ * @param {string} windowId - 窗口ID或partition
+ * @returns {BrowserWindow|null}
+ */
+function getAccountWindow(windowId) {
+    if (!windowId) {
+        log.info('getAccountWindow: windowId 为空');
+        return null;
+    }
+
+    log.info(`getAccountWindow: 查找窗口 ${windowId}, accountWindows.size=${accountWindows.size}`);
+
+    // 直接匹配
+    if (accountWindows.has(windowId)) {
+        const win = accountWindows.get(windowId);
+        if (win && !win.isDestroyed()) {
+            log.info(`getAccountWindow: 直接匹配成功 ${windowId}`);
+            return win;
+        }
+    }
+
+    // 模糊匹配（windowId可能是邮箱的一部分）
+    for (const [partition, win] of accountWindows) {
+        log.info(`  检查: partition=${partition}, windowId=${windowId}`);
+        if (partition.includes(windowId) || windowId.includes(partition)) {
+            if (win && !win.isDestroyed()) {
+                log.info(`getAccountWindow: 模糊匹配成功 ${partition}`);
+                return win;
+            }
+        }
+    }
+
+    log.info(`getAccountWindow: 未找到匹配的窗口`);
+    return null;
+}
+
+/**
+ * 获取所有已登录的账号列表
+ */
+function getLoggedInAccounts() {
+    const accounts = [];
+    accountWindows.forEach((window, partition) => {
+        if (!window.isDestroyed()) {
+            // 从 partition 中提取邮箱
+            const emailMatch = partition.match(/persist:jimeng_(.+)/);
+            if (emailMatch) {
+                accounts.push({
+                    partition,
+                    email: emailMatch[1].replace(/_/g, '.').replace(/_/g, '@'),
+                    window
+                });
+            }
+        }
+    });
+    return accounts;
+}
+
 module.exports = {
     createMainWindow,
     createJimengWindow,
@@ -2076,5 +2680,9 @@ module.exports = {
     setVideoInterceptedCallback,
     setApiResponseCallback,
     uploadMaterials,
-    extractVideos
+    extractVideos,
+    // 多开支持
+    createJimengWindow,
+    getAccountWindows,
+    getAccountWindow
 };

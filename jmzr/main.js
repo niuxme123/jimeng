@@ -72,54 +72,7 @@ async function initApp() {
     const mainWindow = windows.getMainWindow();
     const savedLoginState = auth.getLoginState();
 
-    // 启动时打开即梦窗口并检查实际登录状态
-    if (savedLoginState && savedLoginState.isLoggedIn) {
-        log.info('检测到保存的登录状态，正在验证...');
-
-        // 先显示保存的状态
-        if (mainWindow) {
-            mainWindow.webContents.on('did-finish-load', () => {
-                mainWindow.webContents.send('login-status-changed', {
-                    isLoggedIn: true,
-                    username: savedLoginState.username || null,
-                    lastLoginTime: savedLoginState.lastLoginTime || null
-                });
-            });
-        }
-
-        // 创建即梦窗口（会加载保存的 cookies）
-        setTimeout(async () => {
-            log.info('创建即梦窗口...');
-            windows.createJimengWindow();
-
-            // 等待页面加载后检查实际登录状态
-            setTimeout(async () => {
-                try {
-                    log.info('检查实际登录状态...');
-                    const actualStatus = await windows.checkLoginStatus();
-                    log.info('实际登录状态:', actualStatus);
-
-                    if (mainWindow && !mainWindow.isDestroyed()) {
-                        mainWindow.webContents.send('login-status-changed', {
-                            isLoggedIn: actualStatus.isLoggedIn === true,
-                            username: actualStatus.username || null
-                        });
-                        if (actualStatus.isLoggedIn) {
-                            log.info('登录状态验证成功');
-                        } else {
-                            log.info('登录已过期，请重新登录');
-                        }
-                    }
-                } catch (e) {
-                    log.error('验证登录状态失败:', e);
-                    // 保持保存的状态
-                }
-            }, 5000);
-        }, 1000);
-    } else {
-        log.info('无保存的登录状态');
-    }
-
+    // 启动时不自动打开即梦窗口，等用户手动点击"打开即梦网站"
     log.info('应用初始化完成');
 }
 

@@ -84,8 +84,8 @@ function registerIpcHandlers() {
     });
 
     // 提交任务
-    ipcMain.handle('submit-task', async (event, taskData) => {
-        return await tasks.submitVideoTask(taskData);
+    ipcMain.handle('submit-task', async (event, { taskData, windowId }) => {
+        return await tasks.submitVideoTask(taskData, windowId);
     });
 
     // 获取拦截的视频
@@ -127,8 +127,21 @@ function registerIpcHandlers() {
     });
 
     // 分析页面结构
-    ipcMain.handle('analyze-page', async () => {
-        return await windows.analyzePageStructure();
+    ipcMain.handle('analyze-page', async (event, windowId = null) => {
+        return await windows.analyzePageStructure(windowId);
+    });
+
+    // 获取所有打开的窗口列表
+    ipcMain.handle('get-window-list', async () => {
+        const windowList = [{ id: 'main', title: '主窗口' }];
+        const accountWindows = windows.getAccountWindows();
+        for (const [partition, win] of Object.entries(accountWindows)) {
+            // 从 partition 提取邮箱
+            const emailMatch = partition.match(/jimeng_(.+)/);
+            const email = emailMatch ? emailMatch[1].replace(/_/g, '@') : partition;
+            windowList.push({ id: partition, title: email });
+        }
+        return windowList;
     });
 
     // 提取视频链接
@@ -136,7 +149,7 @@ function registerIpcHandlers() {
         return await windows.extractVideos();
     });
 
-    // 邮箱密码登录
+    // 邮箱密码登录（每个账号独立窗口）
     ipcMain.handle('login-with-email', async (event, { email, password }) => {
         return await windows.loginWithEmail(email, password);
     });
@@ -152,8 +165,8 @@ function registerIpcHandlers() {
     });
 
     // 上传素材到页面
-    ipcMain.handle('upload-materials', async (event, { files, generatedText }) => {
-        return await windows.uploadMaterials(files, generatedText);
+    ipcMain.handle('upload-materials', async (event, { files, generatedText, windowId }) => {
+        return await windows.uploadMaterials(files, generatedText, windowId);
     });
 
     // 解析文案并匹配素材

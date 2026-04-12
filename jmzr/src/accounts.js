@@ -10,6 +10,13 @@ const config = require('./config');
 let accounts = [];
 
 /**
+ * 标准化名称：移除标点符号和空格
+ */
+function normalizeName(name) {
+    return name.replace(/[、，。！？,.\s]/g, '').toLowerCase();
+}
+
+/**
  * 加载账号文件
  */
 async function loadAccountsFile(dialog, mainWindow) {
@@ -373,7 +380,11 @@ function matchMaterialsFromPrompt(promptText, materialsFiles) {
         log.info(`查找场景素材: "${scene}"`);
         const sceneFile = materialsFiles.find(f => {
             const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
-            return nameWithoutExt === scene && f.type === 'image';
+            const normalizedFileName = normalizeName(nameWithoutExt);
+            const normalizedScene = normalizeName(scene);
+            return (normalizedFileName === normalizedScene ||
+                    normalizedFileName.includes(normalizedScene) ||
+                    normalizedScene.includes(normalizedFileName)) && f.type === 'image';
         });
         if (sceneFile) {
             matchedFiles.push({ ...sceneFile, category: 'scene' });
@@ -388,7 +399,11 @@ function matchMaterialsFromPrompt(promptText, materialsFiles) {
         log.info(`查找道具素材: "${prop}"`);
         const propFile = materialsFiles.find(f => {
             const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
-            return nameWithoutExt === prop && f.type === 'image';
+            const normalizedFileName = normalizeName(nameWithoutExt);
+            const normalizedProp = normalizeName(prop);
+            return (normalizedFileName === normalizedProp ||
+                    normalizedFileName.includes(normalizedProp) ||
+                    normalizedProp.includes(normalizedFileName)) && f.type === 'image';
         });
         if (propFile) {
             matchedFiles.push({ ...propFile, category: 'prop' });
@@ -399,32 +414,59 @@ function matchMaterialsFromPrompt(promptText, materialsFiles) {
     });
 
     // 匹配人物（图片+音频）
+    // 人物名称可能包含多个关键词，用顿号分隔，如 "阿俊、助理"
     parsed.characters.forEach(character => {
         log.info(`查找人物素材: "${character}"`);
 
-        // 找人物图片
-        const charImage = materialsFiles.find(f => {
-            const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
-            return nameWithoutExt === character && f.type === 'image';
-        });
-        if (charImage) {
-            matchedFiles.push({ ...charImage, category: 'character' });
-            log.info(`✓ 匹配到人物图片: ${character} -> ${charImage.name}`);
-        } else {
-            log.warn(`✗ 未找到人物图片: ${character}.png 或 ${character}.jpg`);
-        }
+        // 拆分人物名称（支持顿号、逗号等分隔符）
+        const charNames = character.split(/[、，,]/).map(s => s.trim()).filter(s => s);
+        log.info(`  拆分后的关键词: [${charNames.join(', ')}]`);
 
-        // 找人物音频
-        const charAudio = materialsFiles.find(f => {
-            const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
-            return nameWithoutExt === character && f.type === 'audio';
+        // 为每个关键词查找图片
+        charNames.forEach(charName => {
+            const charImage = materialsFiles.find(f => {
+                const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
+                const normalizedFileName = normalizeName(nameWithoutExt);
+                const normalizedChar = normalizeName(charName);
+                return (normalizedFileName === normalizedChar ||
+                        normalizedFileName.includes(normalizedChar) ||
+                        normalizedChar.includes(normalizedFileName)) && f.type === 'image';
+            });
+
+            if (charImage) {
+                // 检查是否已经添加过
+                if (!matchedFiles.find(f => f.path === charImage.path)) {
+                    matchedFiles.push({ ...charImage, category: 'character' });
+                    log.info(`✓ 匹配到人物图片: ${charName} -> ${charImage.name}`);
+                } else {
+                    log.info(`  ${charName} -> ${charImage.name} (已添加)`);
+                }
+            } else {
+                log.warn(`✗ 未找到人物图片: ${charName}.png 或 ${charName}.jpg`);
+            }
+
+            // 为每个关键词查找音频
+            const charAudio = materialsFiles.find(f => {
+                const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
+                const normalizedFileName = normalizeName(nameWithoutExt);
+                const normalizedChar = normalizeName(charName);
+                return (normalizedFileName === normalizedChar ||
+                        normalizedFileName.includes(normalizedChar) ||
+                        normalizedChar.includes(normalizedFileName)) && f.type === 'audio';
+            });
+
+            if (charAudio) {
+                // 检查是否已经添加过
+                if (!matchedFiles.find(f => f.path === charAudio.path)) {
+                    matchedFiles.push({ ...charAudio, category: 'character_audio' });
+                    log.info(`✓ 匹配到人物音频: ${charName} -> ${charAudio.name}`);
+                } else {
+                    log.info(`  ${charName} -> ${charAudio.name} (已添加)`);
+                }
+            } else {
+                log.warn(`✗ 未找到人物音频: ${charName}.mp3 或 ${charName}.wav`);
+            }
         });
-        if (charAudio) {
-            matchedFiles.push({ ...charAudio, category: 'character_audio' });
-            log.info(`✓ 匹配到人物音频: ${character} -> ${charAudio.name}`);
-        } else {
-            log.warn(`✗ 未找到人物音频: ${character}.mp3 或 ${character}.wav`);
-        }
     });
 
     log.info(`总共匹配到 ${matchedFiles.length} 个素材文件`);
@@ -479,10 +521,15 @@ function generatePromptWithReferences(originalText, parsed, matchedFiles) {
 
     // 场景引用
     parsed.scenes.forEach(scene => {
-        const sceneFile = matchedFiles.find(f =>
-            f.category === 'scene' &&
-            f.name.replace(/\.[^.]+$/i, '') === scene
-        );
+        const normalizedScene = normalizeName(scene);
+        const sceneFile = matchedFiles.find(f => {
+            if (f.category !== 'scene') return false;
+            const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
+            const normalizedFileName = normalizeName(nameWithoutExt);
+            return normalizedFileName === normalizedScene ||
+                   normalizedFileName.includes(normalizedScene) ||
+                   normalizedScene.includes(normalizedFileName);
+        });
         if (sceneFile && fileReferences[sceneFile.path]) {
             references[scene] = fileReferences[sceneFile.path].ref;
             log.info(`引用映射: "${scene}" -> "${references[scene]}"`);
@@ -491,10 +538,15 @@ function generatePromptWithReferences(originalText, parsed, matchedFiles) {
 
     // 道具引用
     parsed.props.forEach(prop => {
-        const propFile = matchedFiles.find(f =>
-            f.category === 'prop' &&
-            f.name.replace(/\.[^.]+$/i, '') === prop
-        );
+        const normalizedProp = normalizeName(prop);
+        const propFile = matchedFiles.find(f => {
+            if (f.category !== 'prop') return false;
+            const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
+            const normalizedFileName = normalizeName(nameWithoutExt);
+            return normalizedFileName === normalizedProp ||
+                   normalizedFileName.includes(normalizedProp) ||
+                   normalizedProp.includes(normalizedFileName);
+        });
         if (propFile && fileReferences[propFile.path]) {
             references[prop] = fileReferences[propFile.path].ref;
             log.info(`引用映射: "${prop}" -> "${references[prop]}"`);
@@ -502,29 +554,47 @@ function generatePromptWithReferences(originalText, parsed, matchedFiles) {
     });
 
     // 人物引用（图片+音频）
+    // 人物名称可能包含多个关键词，用顿号分隔，如 "阿俊、助理"
     parsed.characters.forEach(character => {
-        const charImageFile = matchedFiles.find(f =>
-            f.category === 'character' &&
-            f.name.replace(/\.[^.]+$/i, '') === character
-        );
-        const charAudioFile = matchedFiles.find(f =>
-            f.category === 'character_audio' &&
-            f.name.replace(/\.[^.]+$/i, '') === character
-        );
+        // 拆分人物名称
+        const charNames = character.split(/[、，,]/).map(s => s.trim()).filter(s => s);
 
-        // 人物引用拆分为图片和音频两个部分
-        // 图片直接插入，音频用括号包裹
-        if (charImageFile && fileReferences[charImageFile.path]) {
-            const imgRef = fileReferences[charImageFile.path].ref;
-            references[character + '_image'] = imgRef;
-            log.info(`引用映射: "${character}_image" -> "${imgRef}"`);
-        }
-        if (charAudioFile && fileReferences[charAudioFile.path]) {
-            const audioRef = fileReferences[charAudioFile.path].ref;
-            // 音频引用格式：(@Audio1声音)，需要在人物名称后面插入
-            references[character + '_audio'] = '(' + audioRef + '声音)';
-            log.info(`引用映射: "${character}_audio" -> "(${audioRef}声音)"`);
-        }
+        charNames.forEach(charName => {
+            const normalizedCharName = normalizeName(charName);
+
+            // 查找人物图片
+            const charImageFile = matchedFiles.find(f => {
+                if (f.category !== 'character') return false;
+                const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
+                const normalizedFileName = normalizeName(nameWithoutExt);
+                return normalizedFileName === normalizedCharName ||
+                       normalizedFileName.includes(normalizedCharName) ||
+                       normalizedCharName.includes(normalizedFileName);
+            });
+
+            // 查找人物音频
+            const charAudioFile = matchedFiles.find(f => {
+                if (f.category !== 'character_audio') return false;
+                const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
+                const normalizedFileName = normalizeName(nameWithoutExt);
+                return normalizedFileName === normalizedCharName ||
+                       normalizedFileName.includes(normalizedCharName) ||
+                       normalizedCharName.includes(normalizedFileName);
+            });
+
+            // 人物引用拆分为图片和音频两个部分
+            if (charImageFile && fileReferences[charImageFile.path]) {
+                const imgRef = fileReferences[charImageFile.path].ref;
+                references[charName + '_image'] = imgRef;
+                log.info(`引用映射: "${charName}_image" -> "${imgRef}"`);
+            }
+            if (charAudioFile && fileReferences[charAudioFile.path]) {
+                const audioRef = fileReferences[charAudioFile.path].ref;
+                // 音频引用格式：(@Audio1声音)，需要在人物名称后面插入
+                references[charName + '_audio'] = '(' + audioRef + '声音)';
+                log.info(`引用映射: "${charName}_audio" -> "(${audioRef}声音)"`);
+            }
+        });
     });
 
     log.info('生成的引用映射:', references);

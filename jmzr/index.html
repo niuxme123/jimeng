@@ -341,6 +341,15 @@
             </div>
             <button class="btn btn-primary" id="loadAccountsBtn">加载账号文件</button>
             <button class="btn btn-success" id="loginBtn" disabled>邮箱登录选中账号</button>
+            <div id="loggedInAccounts" style="margin-top: 8px; font-size: 12px;"></div>
+
+            <!-- 任务提交区域 -->
+            <div id="taskSubmitArea" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.1); display: none;">
+                <div style="font-size: 12px; color: #4ade80; margin-bottom: 8px;">当前窗口: <span id="currentWindowTitle">-</span></div>
+                <textarea id="taskText" placeholder="输入视频生成文案..." style="margin-bottom: 8px;"></textarea>
+                <button class="btn btn-warning" id="submitTaskBtn" disabled>提交生成任务</button>
+                <button class="btn btn-primary" id="analyzePageBtn" style="margin-top: 8px;">分析页面结构</button>
+            </div>
         </div>
 
         <!-- 素材管理 -->
@@ -350,14 +359,6 @@
             <button class="btn btn-primary" id="selectMaterialsBtn">选择素材文件夹</button>
             <button class="btn btn-success" id="uploadMaterialsBtn" disabled style="margin-top: 8px;">上传素材到页面</button>
             <div id="materialsList" style="margin-top: 8px; font-size: 12px;"></div>
-        </div>
-
-        <!-- 任务提交 -->
-        <div class="card">
-            <div class="card-title">任务提交</div>
-            <textarea id="taskText" placeholder="输入视频生成文案..."></textarea>
-            <button class="btn btn-warning" id="submitTaskBtn" disabled>提交生成任务</button>
-            <button class="btn btn-primary" id="analyzePageBtn" style="margin-top: 8px;">分析页面结构</button>
         </div>
 
         <!-- 视频拦截 -->
@@ -632,7 +633,11 @@
             document.getElementById('loginBtn').disabled = startAccountSelect.value === '';
         });
 
-        // 邮箱登录
+        // 已登录账号列表和当前选中窗口
+        let loggedInAccounts = []; // [{email, windowId}]
+        let currentWindowId = null;
+
+        // 邮箱登录（每个账号独立窗口）
         document.getElementById('loginBtn').addEventListener('click', async () => {
             const index = parseInt(startAccountSelect.value);
             if (isNaN(index)) return;
@@ -641,39 +646,83 @@
             const email = account.email || account;
             const password = account.password || 'Cyh0711666';
 
-            log(`登录账号: ${email}...`, 'info');
+            log(`新窗口登录账号: ${email}...`, 'info');
             document.getElementById('loginBtn').disabled = true;
 
             const result = await ipcRenderer.invoke('login-with-email', { email, password });
 
-            if (result.success) {
-                log('登录请求已提交!', 'success');
-                currentAccountIndex = index;
-                currentAccountName.textContent = email;
-                currentAccountDiv.classList.remove('hidden');
+            // 使用后端返回的 windowId，如果没有则手动生成
+            const windowId = result.windowId || `jimeng_${email.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
-                // 等待几秒后检查登录状态
-                setTimeout(async () => {
-                    const status = await ipcRenderer.invoke('check-login-status');
-                    if (status.isLoggedIn) {
-                        log('登录成功!', 'success');
-                        updateLoginStatus(status);
-                    } else {
-                        log('登录可能失败，请检查', 'warning');
-                    }
-                }, 3000);
+            if (result.success) {
+                log(`账号 ${email} 登录窗口已打开!`, 'success');
             } else {
-                log(`登录失败: ${result.error}`, 'error');
+                log(`窗口已打开，请手动登录`, 'info');
             }
+
+            // 添加到已登录列表
+            if (!loggedInAccounts.find(a => a.email === email)) {
+                loggedInAccounts.push({ email, windowId });
+            }
+
+            // 设为当前窗口并更新UI
+            setCurrentWindow(windowId, email);
+            updateLoggedInAccountsUI();
 
             document.getElementById('loginBtn').disabled = false;
         });
 
-        // 提交任务（解析文案、匹配素材、上传、填充文案）
+        // 设置当前窗口
+        function setCurrentWindow(windowId, email) {
+            currentWindowId = windowId;
+            document.getElementById('taskSubmitArea').style.display = 'block';
+            document.getElementById('currentWindowTitle').textContent = email;
+
+            // 检查该窗口是否已设置参数
+            const account = loggedInAccounts.find(a => a.windowId === windowId);
+            if (account && account.paramsSet) {
+                document.getElementById('submitTaskBtn').disabled = false;
+            } else {
+                document.getElementById('submitTaskBtn').disabled = true;
+                log('请等待默认参数设置完成...', 'info');
+            }
+        }
+
+        // 更新已登录账号列表UI
+        function updateLoggedInAccountsUI() {
+            const container = document.getElementById('loggedInAccounts');
+            if (loggedInAccounts.length > 0) {
+                container.innerHTML = '<div style="color: #888; margin-bottom: 4px;">已打开的账号窗口:</div>' +
+                    loggedInAccounts.map((a, idx) => {
+                        const isActive = a.windowId === currentWindowId;
+                        const style = isActive ? 'background: rgba(74, 222, 128, 0.3); border: 1px solid #4ade80;' : '';
+                        const statusIcon = a.paramsSet ? '✓ ' : '';
+                        return `<div class="status-item status-success" style="${style} cursor: pointer;" onclick="selectAccountWindow(${idx})">${statusIcon}#${idx + 1}: ${a.email}</div>`;
+                    }).join('');
+            } else {
+                container.innerHTML = '';
+            }
+        }
+
+        // 选择账号窗口
+        window.selectAccountWindow = function(idx) {
+            const account = loggedInAccounts[idx];
+            if (account) {
+                setCurrentWindow(account.windowId, account.email);
+                updateLoggedInAccountsUI();
+            }
+        };
+
+        // 提交任务（针对当前选中的窗口）
         document.getElementById('submitTaskBtn').addEventListener('click', async () => {
             const text = document.getElementById('taskText').value;
             if (!text) {
                 log('请输入文案内容', 'error');
+                return;
+            }
+
+            if (!currentWindowId) {
+                log('请先登录一个账号', 'error');
                 return;
             }
 
@@ -704,7 +753,8 @@
                 // 2. 上传匹配的素材并填充文案
                 const uploadResult = await ipcRenderer.invoke('upload-materials', {
                     files: matchResult.matchedFiles,
-                    generatedText: matchResult.generatedText
+                    generatedText: matchResult.generatedText,
+                    windowId: currentWindowId
                 });
 
                 if (uploadResult.success) {
@@ -721,8 +771,11 @@
 
             // 没有素材匹配时，才单独填充文案
             const result = await ipcRenderer.invoke('submit-task', {
-                text: text,
-                type: 'text-to-video'
+                taskData: {
+                    text: text,
+                    type: 'text-to-video'
+                },
+                windowId: currentWindowId
             });
 
             if (result.success) {
@@ -732,14 +785,19 @@
             }
         });
 
-        // 分析页面结构
+        // 分析页面结构（针对当前选中的窗口）
         document.getElementById('analyzePageBtn').addEventListener('click', async () => {
-            log('分析页面结构...', 'info');
-            const result = await ipcRenderer.invoke('analyze-page');
+            if (!currentWindowId) {
+                log('请先登录一个账号', 'error');
+                return;
+            }
+
+            log(`分析页面结构... (${currentWindowId})`, 'info');
+            const result = await ipcRenderer.invoke('analyze-page', currentWindowId);
             if (result) {
                 log('页面结构分析完成，请查看控制台日志', 'success');
             } else {
-                log('分析失败，请确保已打开即梦窗口', 'error');
+                log('分析失败，请确保窗口存在', 'error');
             }
         });
 
@@ -855,16 +913,35 @@
             }
         });
 
-        // 登录状态变化通知
+        // 登录状态变化通知（保留但不自动检查）
         ipcRenderer.on('login-status-changed', (event, status) => {
             updateLoginStatus(status);
-            if (status.isLoggedIn) {
-                log('检测到登录状态', 'success');
+            if (status.isLoggedIn && status.email && status.windowId) {
+                // 更新账号的参数设置状态
+                const account = loggedInAccounts.find(a => a.windowId === status.windowId);
+                if (account) {
+                    account.paramsSet = true;
+                    log(`账号 ${status.email} 默认参数设置完成`, 'success');
+                }
+                updateLoggedInAccountsUI();
+            }
+        });
+
+        // 接收调试信息
+        ipcRenderer.on('debug-info', (event, info) => {
+            log('=== 页面调试信息 ===', 'info');
+            log('URL: ' + info.url, 'info');
+            log('Title: ' + info.title, 'info');
+            if (info.buttons && info.buttons.length > 0) {
+                log('按钮: ' + info.buttons.join(' | '), 'info');
+            }
+            if (info.divs && info.divs.length > 0) {
+                log('登录相关div: ' + info.divs.join(' | '), 'info');
             }
         });
 
         // 初始化
-        log('系统已就绪 - 国际版（邮箱登录）', 'success');
+        log('系统已就绪 - 国际版（邮箱登录，支持多开）', 'success');
 
         // 素材管理状态
         let materialsFolder = '';
@@ -872,12 +949,6 @@
 
         // 自动加载上次的账号文件和素材文件夹
         setTimeout(async () => {
-            const savedState = await ipcRenderer.invoke('get-saved-login-state');
-            if (savedState && savedState.isLoggedIn) {
-                updateLoginStatus(savedState);
-                log('检测到上次登录状态，正在验证...', 'info');
-            }
-
             // 自动加载上次的账号文件
             const result = await ipcRenderer.invoke('auto-load-last-accounts');
             if (result.count > 0) {

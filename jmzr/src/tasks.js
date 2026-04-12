@@ -8,15 +8,29 @@ const windows = require('./windows');
 /**
  * 提交视频生成任务
  * 填充文案到页面的文本框
+ * @param {object} taskData - 任务数据
+ * @param {string} windowId - 目标窗口ID（可选）
  */
-async function submitVideoTask(taskData) {
-    log.info('提交视频任务:', taskData);
+async function submitVideoTask(taskData, windowId = null) {
+    log.info('提交视频任务:', taskData, '目标窗口:', windowId);
 
-    let jimengWindow = windows.getJimengWindow();
-    if (!jimengWindow) {
+    // 根据windowId获取对应窗口
+    let targetWindow = windows.getAccountWindow(windowId);
+
+    // 如果没找到指定窗口，使用主窗口
+    if (!targetWindow) {
+        targetWindow = windows.getJimengWindow();
+    }
+
+    // 如果还是没有，创建新窗口
+    if (!targetWindow) {
         windows.createJimengWindow();
         await new Promise(resolve => setTimeout(resolve, 3000));
-        jimengWindow = windows.getJimengWindow();
+        targetWindow = windows.getJimengWindow();
+    }
+
+    if (!targetWindow || targetWindow.isDestroyed()) {
+        return { success: false, error: '目标窗口不存在' };
     }
 
     const submitScript = `
@@ -89,7 +103,7 @@ async function submitVideoTask(taskData) {
         })();
     `;
 
-    const result = await jimengWindow.webContents.executeJavaScript(submitScript);
+    const result = await targetWindow.webContents.executeJavaScript(submitScript);
 
     const mainWindow = windows.getMainWindow();
     if (mainWindow) {
