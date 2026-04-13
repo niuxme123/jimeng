@@ -1421,6 +1421,14 @@ async function loginWithEmail(email, password) {
     targetWindow.on('closed', () => {
         accountWindows.delete(partition);
         log.info(`账号 ${email} 的窗口已关闭`);
+
+        // 通知前端窗口已关闭
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('account-window-closed', {
+                windowId: partition,
+                email: email
+            });
+        }
     });
 
     // 保存到账号窗口映射

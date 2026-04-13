@@ -903,6 +903,25 @@
             }
         });
 
+        // 窗口关闭通知
+        ipcRenderer.on('account-window-closed', (event, data) => {
+            // 从已登录账号列表中移除
+            const index = loggedInAccounts.findIndex(a => a.windowId === data.windowId);
+            if (index !== -1) {
+                const closedAccount = loggedInAccounts.splice(index, 1)[0];
+                log(`账号窗口已关闭: ${closedAccount.email}`, 'warning');
+
+                // 如果关闭的是当前选中的窗口，清除选中状态
+                if (currentWindowId === data.windowId) {
+                    currentWindowId = null;
+                    document.getElementById('taskSubmitArea').style.display = 'none';
+                    document.getElementById('submitTaskBtn').disabled = true;
+                }
+
+                updateLoggedInAccountsUI();
+            }
+        });
+
         ipcRenderer.on('video-intercepted', (event, video) => {
             // 获取来源窗口ID
             const windowId = video.windowId || 'unknown';
