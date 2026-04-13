@@ -361,24 +361,24 @@
             <div id="materialsList" style="margin-top: 8px; font-size: 12px;"></div>
         </div>
 
-        <!-- 视频拦截 -->
+        <!-- 视频拦截（按窗口分类） -->
         <div class="card">
             <div class="card-title">
                 拦截的视频
                 <span class="badge badge-success" id="videoCount">0</span>
             </div>
-            <div class="video-list" id="videoList">
-                <div class="status-item status-info">等待拦截视频...</div>
+            <div id="videosByWindow" style="font-size: 12px;">
+                <div class="status-item status-info">等待账号登录后拦截视频...</div>
             </div>
             <button class="btn btn-success" id="extractVideosBtn" style="margin-top: 8px;">提取当前页面视频</button>
             <button class="btn btn-primary" id="downloadAllBtn" style="margin-top: 8px;" disabled>下载全部视频</button>
+            <button class="btn btn-danger" id="clearVideosBtn" style="margin-top: 8px;">清空拦截记录</button>
         </div>
 
         <!-- 快捷操作 -->
         <div class="card">
             <div class="card-title">快捷操作</div>
             <button class="btn btn-primary" id="openJimengBtn">打开即梦网站</button>
-            <button class="btn btn-danger" id="clearVideosBtn">清空拦截记录</button>
         </div>
 
         <!-- 状态日志 -->
@@ -401,13 +401,12 @@
         // 状态
         let accounts = [];
         let currentAccountIndex = -1;
-        let interceptedVideos = [];
+        let videosByWindow = {}; // { windowId: [videos] }
         let isLoggedIn = false;
 
         // DOM 元素
         const currentAccountDiv = document.getElementById('currentAccount');
         const currentAccountName = document.getElementById('currentAccountName');
-        const videoList = document.getElementById('videoList');
         const videoCount = document.getElementById('videoCount');
         const statusLog = document.getElementById('statusLog');
         const loginStatus = document.getElementById('loginStatus');
@@ -485,66 +484,95 @@
             loginBtn.disabled = false;
         }
 
-        // 更新视频列表
+        // 更新视频列表（按窗口分类）
         function updateVideoList() {
-            videoCount.textContent = interceptedVideos.length;
-            videoList.innerHTML = '';
+            const container = document.getElementById('videosByWindow');
 
-            if (interceptedVideos.length === 0) {
-                videoList.innerHTML = '<div class="status-item status-info">等待拦截视频...</div>';
+            // 计算总视频数
+            let totalVideos = 0;
+            Object.values(videosByWindow).forEach(videos => {
+                totalVideos += videos.length;
+            });
+            videoCount.textContent = totalVideos;
+
+            if (totalVideos === 0) {
+                container.innerHTML = '<div class="status-item status-info">等待账号登录后拦截视频...</div>';
                 document.getElementById('downloadAllBtn').disabled = true;
                 return;
             }
 
-            interceptedVideos.forEach((video, index) => {
-                const item = document.createElement('div');
-                item.className = 'video-item';
+            container.innerHTML = '';
 
-                // 判断是否有无水印标识
-                const watermarkBadge = video.isWatermarkFree
-                    ? '<span class="watermark-badge watermark-free">无水印</span>'
-                    : '<span class="watermark-badge watermark-unknown">未知</span>';
+            // 按窗口显示视频
+            Object.entries(videosByWindow).forEach(([windowId, videos]) => {
+                if (videos.length === 0) return;
 
-                // 截取 URL 显示
-                const shortUrl = video.url.length > 60
-                    ? video.url.substring(0, 60) + '...'
-                    : video.url;
+                // 查找对应的账号信息
+                const account = loggedInAccounts.find(a => a.windowId === windowId);
+                const displayName = account ? account.email : windowId;
 
-                item.innerHTML = `
-                    <div class="url" title="${video.url}">${shortUrl}</div>
-                    <div>
-                        <span class="time">${video.timestamp}</span>
-                        ${watermarkBadge}
-                    </div>
-                    <div class="source">来源: ${video.source || video.type || 'network'}</div>
-                    <div style="display: flex; gap: 8px; margin-top: 6px;">
-                        <button class="btn btn-primary" style="flex: 1; font-size: 11px; padding: 6px;" onclick="downloadVideo(${index})">
-                            下载
-                        </button>
-                        <button class="btn btn-warning" style="flex: 1; font-size: 11px; padding: 6px;" onclick="copyVideoUrl(${index})">
-                            复制链接
-                        </button>
+                const windowDiv = document.createElement('div');
+                windowDiv.style.cssText = 'margin-bottom: 12px; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 4px;';
+
+                windowDiv.innerHTML = `
+                    <div style="color: #4ade80; font-weight: bold; margin-bottom: 8px; font-size: 11px;">
+                        📹 ${displayName} (${videos.length}个)
                     </div>
                 `;
-                videoList.appendChild(item);
+
+                videos.forEach((video, index) => {
+                    const item = document.createElement('div');
+                    item.className = 'video-item';
+                    item.style.cssText = 'font-size: 11px; padding: 6px; margin-bottom: 4px;';
+
+                    const watermarkBadge = video.isWatermarkFree
+                        ? '<span class="watermark-badge watermark-free">无水印</span>'
+                        : '<span class="watermark-badge watermark-unknown">未知</span>';
+
+                    const shortUrl = video.url.length > 40
+                        ? video.url.substring(0, 40) + '...'
+                        : video.url;
+
+                    item.innerHTML = `
+                        <div class="url" title="${video.url}" style="font-size: 10px; color: #888;">${shortUrl}</div>
+                        <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
+                            ${watermarkBadge}
+                            <span class="time" style="font-size: 10px;">${video.timestamp || ''}</span>
+                        </div>
+                        <div style="display: flex; gap: 4px; margin-top: 4px;">
+                            <button class="btn btn-primary" style="flex: 1; font-size: 10px; padding: 4px;" onclick="downloadVideo('${windowId}', ${index})">
+                                下载
+                            </button>
+                            <button class="btn btn-warning" style="flex: 1; font-size: 10px; padding: 4px;" onclick="copyVideoUrl('${windowId}', ${index})">
+                                复制
+                            </button>
+                        </div>
+                    `;
+                    windowDiv.appendChild(item);
+                });
+
+                container.appendChild(windowDiv);
             });
 
             document.getElementById('downloadAllBtn').disabled = false;
         }
 
         // 复制视频链接
-        function copyVideoUrl(index) {
-            const video = interceptedVideos[index];
-            require('electron').clipboard.writeText(video.url);
-            log('视频链接已复制到剪贴板', 'success');
+        function copyVideoUrl(windowId, index) {
+            const video = videosByWindow[windowId]?.[index];
+            if (video) {
+                require('electron').clipboard.writeText(video.url);
+                log('视频链接已复制到剪贴板', 'success');
+            }
         }
 
         // 下载视频
-        async function downloadVideo(index) {
-            const video = interceptedVideos[index];
-            const filename = `video_${Date.now()}_${index}.mp4`;
+        async function downloadVideo(windowId, index) {
+            const video = videosByWindow[windowId]?.[index];
+            if (!video) return;
 
-            log(`正在下载视频 ${index + 1}...`, 'info');
+            const filename = `video_${Date.now()}_${index}.mp4`;
+            log(`正在下载视频...`, 'info');
 
             try {
                 const result = await ipcRenderer.invoke('download-video', {
@@ -696,8 +724,17 @@
                     loggedInAccounts.map((a, idx) => {
                         const isActive = a.windowId === currentWindowId;
                         const style = isActive ? 'background: rgba(74, 222, 128, 0.3); border: 1px solid #4ade80;' : '';
-                        const statusIcon = a.paramsSet ? '✓ ' : '';
-                        return `<div class="status-item status-success" style="${style} cursor: pointer;" onclick="selectAccountWindow(${idx})">${statusIcon}#${idx + 1}: ${a.email}</div>`;
+                        // paramsSet: true=全部成功✓, false=有失败✗, undefined=未设置(等待中)
+                        let statusIcon = '⏳ ';
+                        let statusColor = '#888';
+                        if (a.paramsSet === true) {
+                            statusIcon = '✓ ';
+                            statusColor = '#4ade80';
+                        } else if (a.paramsSet === false) {
+                            statusIcon = '✗ ';
+                            statusColor = '#f87171';
+                        }
+                        return `<div class="status-item status-success" style="${style} cursor: pointer; color: ${statusColor};" onclick="selectAccountWindow(${idx})">${statusIcon}#${idx + 1}: ${a.email}</div>`;
                     }).join('');
             } else {
                 container.innerHTML = '';
@@ -828,17 +865,23 @@
 
         // 清空视频记录
         document.getElementById('clearVideosBtn').addEventListener('click', () => {
-            interceptedVideos = [];
+            videosByWindow = {};
             updateVideoList();
             log('已清空拦截记录', 'info');
         });
 
         // 下载全部视频
         document.getElementById('downloadAllBtn').addEventListener('click', async () => {
-            log(`开始下载 ${interceptedVideos.length} 个视频...`, 'info');
+            let totalVideos = 0;
+            Object.values(videosByWindow).forEach(videos => {
+                totalVideos += videos.length;
+            });
+            log(`开始下载 ${totalVideos} 个视频...`, 'info');
 
-            for (let i = 0; i < interceptedVideos.length; i++) {
-                await downloadVideo(i);
+            for (const [windowId, videos] of Object.entries(videosByWindow)) {
+                for (let i = 0; i < videos.length; i++) {
+                    await downloadVideo(windowId, i);
+                }
             }
 
             log('全部下载完成!', 'success');
@@ -861,12 +904,20 @@
         });
 
         ipcRenderer.on('video-intercepted', (event, video) => {
+            // 获取来源窗口ID
+            const windowId = video.windowId || 'unknown';
+
+            // 初始化该窗口的视频数组
+            if (!videosByWindow[windowId]) {
+                videosByWindow[windowId] = [];
+            }
+
             // 前端也做去重
             const urlKey = video.url.split('?')[0];
-            const exists = interceptedVideos.some(v => v.url.split('?')[0] === urlKey);
+            const exists = videosByWindow[windowId].some(v => v.url.split('?')[0] === urlKey);
             if (!exists) {
-                log(`拦截到视频: ${video.url.substring(0, 50)}...`, 'success');
-                interceptedVideos.push(video);
+                log(`拦截到视频 [${windowId}]: ${video.url.substring(0, 50)}...`, 'success');
+                videosByWindow[windowId].push(video);
                 updateVideoList();
             }
         });
@@ -902,11 +953,30 @@
             if (result.success) {
                 log('已设置默认生成参数', 'success');
                 if (result.results) {
+                    let allSuccess = true;
                     result.results.forEach(r => {
                         if (r.success) {
                             log(`${r.label}: ${r.value}`, 'info');
+                        } else {
+                            log(`${r.label}: ${r.error}`, 'error');
+                            allSuccess = false;
                         }
                     });
+
+                    // 更新账号的参数设置状态
+                    if (result.windowId) {
+                        const account = loggedInAccounts.find(a => a.windowId === result.windowId);
+                        if (account) {
+                            account.paramsSet = allSuccess;
+                            account.paramsResults = result.results;
+                            if (allSuccess) {
+                                log(`账号 ${account.email} 默认参数全部设置完成`, 'success');
+                            } else {
+                                log(`账号 ${account.email} 部分参数设置失败`, 'warning');
+                            }
+                            updateLoggedInAccountsUI();
+                        }
+                    }
                 }
             } else {
                 log(`参数设置失败: ${result.error}`, 'warning');
@@ -916,15 +986,7 @@
         // 登录状态变化通知（保留但不自动检查）
         ipcRenderer.on('login-status-changed', (event, status) => {
             updateLoginStatus(status);
-            if (status.isLoggedIn && status.email && status.windowId) {
-                // 更新账号的参数设置状态
-                const account = loggedInAccounts.find(a => a.windowId === status.windowId);
-                if (account) {
-                    account.paramsSet = true;
-                    log(`账号 ${status.email} 默认参数设置完成`, 'success');
-                }
-                updateLoggedInAccountsUI();
-            }
+            // 参数设置结果现在通过 params-set 事件处理
         });
 
         // 接收调试信息

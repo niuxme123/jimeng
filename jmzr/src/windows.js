@@ -208,8 +208,10 @@ async function checkAndHandleLoginStatus() {
 
 /**
  * 设置请求拦截器 - 拦截视频下载
+ * @param {WebContents} webContents - 网页内容
+ * @param {string} windowId - 窗口ID（用于标识视频来源）
  */
-function setupRequestInterceptor(webContents) {
+function setupRequestInterceptor(webContents, windowId = null) {
     // 监听网络请求 - 视频文件
     webContents.session.webRequest.onCompleted(
         { urls: ['*://*/*.mp4', '*://*/*.webm', '*://*/*video*', '*://*/*.m3u8'] },
@@ -232,7 +234,8 @@ function setupRequestInterceptor(webContents) {
                 resourceType: details.resourceType,
                 status: details.statusCode,
                 isWatermarkFree: isWatermarkFree,
-                source: 'network-request'
+                source: 'network-request',
+                windowId: windowId
             };
 
             if (onVideoIntercepted) {
@@ -1391,8 +1394,8 @@ async function loginWithEmail(email, password) {
 
     targetWindow.loadURL(config.currentVersion === 'cn' ? config.targetUrlCN : config.targetUrlIntl);
 
-    // 设置请求拦截
-    setupRequestInterceptor(targetWindow.webContents);
+    // 设置请求拦截，传入窗口ID用于标识视频来源
+    setupRequestInterceptor(targetWindow.webContents, partition);
 
     // 页面加载完成后设置标题并处理弹窗
     targetWindow.webContents.on('did-finish-load', () => {
@@ -1774,7 +1777,7 @@ async function loginWithEmail(email, password) {
                     }
 
                     // 设置默认参数
-                    await setDefaultGenerateParamsForWindow(targetWindow);
+                    await setDefaultGenerateParamsForWindow(targetWindow, partition);
                     return;
                 }
 
@@ -1799,8 +1802,10 @@ async function loginWithEmail(email, password) {
 
 /**
  * 为指定窗口设置默认生成参数
+ * @param {BrowserWindow} targetWindow - 目标窗口
+ * @param {string} windowId - 窗口ID（用于通知前端）
  */
-async function setDefaultGenerateParamsForWindow(targetWindow) {
+async function setDefaultGenerateParamsForWindow(targetWindow, windowId = null) {
     if (!targetWindow || targetWindow.isDestroyed()) return;
 
     log.info('设置默认生成参数...');
@@ -2068,6 +2073,9 @@ async function setDefaultGenerateParamsForWindow(targetWindow) {
             });
         }
 
+        // 添加 windowId 到结果中
+        result.windowId = windowId;
+
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('params-set', result);
         }
@@ -2075,7 +2083,7 @@ async function setDefaultGenerateParamsForWindow(targetWindow) {
         return result;
     } catch (error) {
         log.error('设置参数失败:', error);
-        return { success: false, error: error.message };
+        return { success: false, error: error.message, windowId: windowId };
     }
 }
 
