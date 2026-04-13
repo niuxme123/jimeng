@@ -1,6 +1,6 @@
 {
   "name": "jimeng-automation",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "即梦AI自动化工具 - 多账号窗口、自动登录、提交任务、拦截视频、无水印下载",
   "main": "main.js",
   "scripts": {
