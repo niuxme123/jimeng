@@ -284,7 +284,7 @@ function setupRequestInterceptor(webContents, windowId = null) {
 
             // 如果是成功的响应，尝试从页面中提取视频信息
             if (details.statusCode === 200) {
-                extractVideoInfoFromPage(webContents);
+                extractVideoInfoFromPage(webContents, windowId);
             }
 
             if (mainWindow) {
@@ -302,14 +302,15 @@ function setupRequestInterceptor(webContents, windowId = null) {
         (details, callback) => {
             const contentType = details.responseHeaders?.['content-type']?.[0] || '';
             if (contentType.includes('video') || contentType.includes('mp4')) {
-                log.info('检测到视频响应:', details.url, contentType);
+                log.info('检测到视频响应:', details.url, contentType, '来源窗口:', windowId);
 
                 // 提取视频 URL 的关键信息
                 const videoInfo = {
                     url: details.url,
                     contentType: contentType,
                     timestamp: new Date().toISOString(),
-                    source: 'response-header'
+                    source: 'response-header',
+                    windowId: windowId
                 };
 
                 // 使用去重函数发送
@@ -323,8 +324,10 @@ function setupRequestInterceptor(webContents, windowId = null) {
 /**
  * 从页面中提取视频信息
  * 支持多种视频源提取方式
+ * @param {WebContents} webContents - 网页内容
+ * @param {string} windowId - 窗口ID
  */
-async function extractVideoInfoFromPage(webContents) {
+async function extractVideoInfoFromPage(webContents, windowId = null) {
     try {
         const script = `
             (function() {
@@ -503,6 +506,8 @@ async function extractVideoInfoFromPage(webContents) {
             });
 
             processedVideos.forEach(video => {
+                // 添加 windowId
+                video.windowId = windowId;
                 // 使用去重函数发送
                 sendVideoToMainWindow(video);
             });
