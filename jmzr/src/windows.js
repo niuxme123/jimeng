@@ -212,11 +212,13 @@ async function checkAndHandleLoginStatus() {
  * @param {string} windowId - 窗口ID（用于标识视频来源）
  */
 function setupRequestInterceptor(webContents, windowId = null) {
+    log.info(`设置请求拦截器, windowId: ${windowId}`);
+
     // 监听网络请求 - 视频文件
     webContents.session.webRequest.onCompleted(
         { urls: ['*://*/*.mp4', '*://*/*.webm', '*://*/*video*', '*://*/*.m3u8'] },
         (details) => {
-            log.info('拦截到视频请求:', details.url);
+            log.info('拦截到视频请求:', details.url, '来源窗口:', windowId);
 
             // 检查是否是无水印视频（通常在 URL 中包含特定标识）
             const url = details.url;
