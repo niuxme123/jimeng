@@ -1422,12 +1422,31 @@ async function loginWithEmail(email, password) {
         accountWindows.delete(partition);
         log.info(`账号 ${email} 的窗口已关闭`);
 
+        // 清理 session 缓存，释放内存
+        try {
+            const ses = session.fromPartition(partition);
+            if (ses) {
+                ses.clearCache().then(() => {
+                    log.info(`已清理 ${email} 的缓存`);
+                }).catch(e => log.error('清理缓存失败:', e));
+                ses.clearStorageData({ storages: ['localstorage', 'sessionstorage', 'indexdb', 'serviceworkers', 'caches'] })
+                    .catch(e => log.error('清理存储数据失败:', e));
+            }
+        } catch (e) {
+            log.error('清理 session 失败:', e);
+        }
+
         // 通知前端窗口已关闭
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('account-window-closed', {
                 windowId: partition,
                 email: email
             });
+        }
+
+        // 强制垃圾回收（如果启用了 --expose-gc）
+        if (global.gc) {
+            global.gc();
         }
     });
 

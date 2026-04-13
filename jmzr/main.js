@@ -3,7 +3,8 @@
  * 即梦AI自动化工具 - 自动登录、提交任务、拦截视频
  */
 
-// 设置控制台编码为 UTF-8
+// 启用垃圾回收暴露（用于手动触发 GC 释放内存）
+// 需要在 app ready 之前设置
 if (process.platform === 'win32') {
     // Windows 下设置控制台代码页为 UTF-8
     require('child_process').exec('chcp 65001', () => {});
