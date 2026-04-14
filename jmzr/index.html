@@ -338,6 +338,7 @@
                 <label style="font-size: 12px; color: #888; margin-bottom: 4px; display: block;">选择要登录的账号:</label>
                 <select id="startAccountSelect" style="margin-bottom: 8px;">
                 </select>
+                <button class="btn btn-primary" id="copyAccountBtn" style="margin-left: 8px; padding: 4px 8px; font-size: 11px;">复制账号</button>
             </div>
             <button class="btn btn-primary" id="loadAccountsBtn">加载账号文件</button>
             <button class="btn btn-success" id="loginBtn" disabled>邮箱登录选中账号</button>
@@ -659,6 +660,19 @@
         const startAccountSelect = document.getElementById('startAccountSelect');
         startAccountSelect.addEventListener('change', () => {
             document.getElementById('loginBtn').disabled = startAccountSelect.value === '';
+        });
+
+        // 复制账号按钮
+        document.getElementById('copyAccountBtn').addEventListener('click', () => {
+            const index = parseInt(startAccountSelect.value);
+            if (isNaN(index)) {
+                log('请先选择一个账号', 'warning');
+                return;
+            }
+            const account = accounts[index];
+            const email = account.email || account;
+            require('electron').clipboard.writeText(email);
+            log(`已复制账号: ${email}`, 'success');
         });
 
         // 已登录账号列表和当前选中窗口
