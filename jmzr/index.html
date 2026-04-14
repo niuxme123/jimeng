@@ -705,15 +705,8 @@
             currentWindowId = windowId;
             document.getElementById('taskSubmitArea').style.display = 'block';
             document.getElementById('currentWindowTitle').textContent = email;
-
-            // 检查该窗口是否已设置参数
-            const account = loggedInAccounts.find(a => a.windowId === windowId);
-            if (account && account.paramsSet) {
-                document.getElementById('submitTaskBtn').disabled = false;
-            } else {
-                document.getElementById('submitTaskBtn').disabled = true;
-                log('请等待默认参数设置完成...', 'info');
-            }
+            // 提交按钮始终可用（只要有窗口被选中）
+            document.getElementById('submitTaskBtn').disabled = false;
         }
 
         // 更新已登录账号列表UI
