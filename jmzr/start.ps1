@@ -90,12 +90,12 @@ try {
 
     if (Test-Path $ElectronExe) {
         Write-Host "[INFO] Using Electron: $ElectronExe" -ForegroundColor Gray
-        $process = Start-Process -FilePath $ElectronExe -ArgumentList "." -PassThru
+        $process = Start-Process -FilePath $ElectronExe -ArgumentList ".", "--expose-gc" -PassThru
     } else {
         # Fallback: use node to run electron cli
         $ElectronCli = Join-Path $ElectronPath "cli.js"
         Write-Host "[INFO] Using Electron CLI: $ElectronCli" -ForegroundColor Gray
-        $process = Start-Process -FilePath $NodeExe -ArgumentList $ElectronCli, "." -PassThru
+        $process = Start-Process -FilePath $NodeExe -ArgumentList $ElectronCli, ".", "--expose-gc" -PassThru
     }
 
     # Wait for process or Ctrl+C
