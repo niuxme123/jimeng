@@ -305,6 +305,7 @@ function getFileType(ext) {
  * - 道具为XXX / 道具是XXX / 道具:XXX / 道具：XXX
  * - 人物为XXX / 人物是XXX / 人物:XXX / 人物：XXX
  * - 人物支持多值，用顿号、逗号、空格、数字序号等分隔
+ * - 人物名称后的数字标识会保留，如：苏念1、林峰2
  */
 function parsePromptText(promptText) {
     const result = {
@@ -350,14 +351,22 @@ function parsePromptText(promptText) {
     if (characterMatch) {
         let characterText = cleanText(characterMatch[1]);
         if (characterText) {
-            // 用正则分割：支持顿号、逗号、空格、数字加点(如 1. 2.)、数字加顿号(如 1、2、)
-            // 先把数字序号去掉，再用分隔符分割
-            characterText = characterText.replace(/[0-9]+[.、．:：]?\s*/g, '');
+            log.info(`原始人物文本: "${characterText}"`);
 
-            // 分割：顿号、逗号、空格、斜杠等
-            const characters = characterText.split(/[、，,\\/\s]+/).filter(s => s.trim());
+            // 分割：顿号、逗号等分隔符
+            // 注意：不要去掉人物名后面的数字标识（如 苏念1、林峰2）
+            // 格式可能是：苏念1、林峰2 或 1.苏念 2.林峰 或 苏念1 林峰2
+            const characters = characterText.split(/[、，,]+/).filter(s => s.trim());
+
             characters.forEach(char => {
-                const trimmed = char.trim();
+                let trimmed = char.trim();
+
+                // 如果是 "1.苏念" 或 "1、苏念" 格式，去掉前面的序号
+                const match = trimmed.match(/^[0-9]+[.、．:：]\s*(.+)$/);
+                if (match) {
+                    trimmed = match[1].trim();
+                }
+
                 if (trimmed && !result.characters.includes(trimmed)) {
                     result.characters.push(trimmed);
                     log.info(`解析到人物: "${trimmed}"`);

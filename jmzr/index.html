@@ -163,6 +163,11 @@
             color: #f59e0b;
         }
 
+        .materials-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
         .video-list {
             max-height: 200px;
             overflow-y: auto;
@@ -364,7 +369,7 @@
             <div id="currentMaterialsFolder" style="font-size: 12px; color: #888; margin-bottom: 8px; word-break: break-all;"></div>
             <button class="btn btn-primary" id="selectMaterialsBtn">选择素材文件夹</button>
             <button class="btn btn-success" id="uploadMaterialsBtn" disabled style="margin-top: 8px;">上传素材到页面</button>
-            <div id="materialsList" style="margin-top: 8px; font-size: 12px;"></div>
+            <div id="materialsList" class="materials-list" style="margin-top: 8px; font-size: 12px;"></div>
         </div>
 
         <!-- 视频拦截（按窗口分类） -->
