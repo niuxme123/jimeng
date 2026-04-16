@@ -1397,21 +1397,24 @@ async function loginWithEmail(email, password) {
 
     // 检查是否已有该账号的窗口
     let targetWindow = accountWindows.get(partition);
+    let windowExists = false;
 
     if (targetWindow && !targetWindow.isDestroyed()) {
-        log.info(`账号 ${email} 的窗口已存在，聚焦窗口`);
+        log.info(`账号 ${email} 的窗口已存在，重新执行登录脚本`);
         targetWindow.focus();
-        return { success: true, message: '窗口已存在', email };
+        windowExists = true;
+        // 不直接返回，而是继续执行登录脚本
     }
 
-    // 创建新窗口
-    targetWindow = new BrowserWindow({
-        width: 1400,
-        height: 900,
-        webPreferences: {
-            nodeIntegration: false,
-            contextIsolation: true,
-            preload: path.join(__dirname, '..', 'preload.js'),
+    // 如果窗口不存在，创建新窗口
+    if (!windowExists) {
+        targetWindow = new BrowserWindow({
+            width: 1400,
+            height: 900,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                preload: path.join(__dirname, '..', 'preload.js'),
             webSecurity: false,
             partition: partition
         },
@@ -1471,6 +1474,15 @@ async function loginWithEmail(email, password) {
 
     // 保存到账号窗口映射
     accountWindows.set(partition, targetWindow);
+
+    } // 结束 if (!windowExists)
+
+    // 以下是登录脚本执行（无论窗口是新创建还是已存在都会执行）
+
+    // 如果窗口已存在，等待一下确保页面就绪
+    if (windowExists) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+    }
 
     // 等待页面加载完成
     await new Promise(resolve => {
