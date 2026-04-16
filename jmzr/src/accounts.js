@@ -187,15 +187,7 @@ function getAccount(index) {
  */
 async function selectMaterialsFolder(dialog, mainWindow) {
     const result = await dialog.showOpenDialog(mainWindow, {
-        properties: ['openDirectory'],
-        title: '选择素材文件夹 (支持: png, jpg, mp3, wav 等格式)',
-        filters: [
-            { name: '素材文件', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'mp3', 'wav', 'mp4', 'mov'] },
-            { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] },
-            { name: '音频', extensions: ['mp3', 'wav'] },
-            { name: '视频', extensions: ['mp4', 'mov'] },
-            { name: '所有文件', extensions: ['*'] }
-        ]
+        properties: ['openDirectory']
     });
 
     if (result.canceled || result.filePaths.length === 0) {
@@ -264,33 +256,26 @@ function scanMaterialsFolder(folderPath) {
 
     try {
         const items = fs.readdirSync(folderPath);
-        log.info(`文件夹 ${folderPath} 中共有 ${items.length} 个项目`);
 
         items.forEach(item => {
             const itemPath = path.join(folderPath, item);
-            try {
-                const stat = fs.statSync(itemPath);
+            const stat = fs.statSync(itemPath);
 
-                if (stat.isFile()) {
-                    const ext = path.extname(item).toLowerCase();
-                    if (supportedExtensions.includes(ext)) {
-                        files.push({
-                            name: item,
-                            path: itemPath,
-                            ext: ext,
-                            type: getFileType(ext)
-                        });
-                    }
+            if (stat.isFile()) {
+                const ext = path.extname(item).toLowerCase();
+                if (supportedExtensions.includes(ext)) {
+                    files.push({
+                        name: item,
+                        path: itemPath,
+                        ext: ext,
+                        type: getFileType(ext)
+                    });
                 }
-            } catch (e) {
-                log.warn(`无法读取文件: ${item}`);
             }
         });
 
         // 按文件名排序
         files.sort((a, b) => a.name.localeCompare(b.name));
-
-        log.info(`扫描到 ${files.length} 个支持的素材文件`);
 
     } catch (err) {
         log.error(`扫描素材文件夹失败: ${err.message}`);
@@ -369,7 +354,7 @@ function parsePromptText(promptText) {
     }
 
     // 提取人物：支持多种格式
-    // 人物可以有多个，支持顿号、逗号分隔
+    // 人物可以有多个，支持顿号、逗号、空格分隔
     // 人物名后的数字标识会被去掉：苏念1、林峰2 → ["苏念", "林峰"]
     let characterMatch = promptText.match(/人物[为是：:]([^）)\（\n]+)/);
     if (characterMatch) {
@@ -377,8 +362,8 @@ function parsePromptText(promptText) {
         if (characterText) {
             log.info(`原始人物文本: "${characterText}"`);
 
-            // 用顿号、逗号分隔
-            const characters = characterText.split(/[、，,]+/).filter(s => s.trim());
+            // 用顿号、逗号、空格分隔
+            const characters = characterText.split(/[、，,\s]+/).filter(s => s.trim());
 
             characters.forEach(char => {
                 let trimmed = char.trim();
