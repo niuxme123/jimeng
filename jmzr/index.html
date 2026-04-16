@@ -1152,19 +1152,75 @@
 
             if (materialsFolder) {
                 folderDiv.textContent = `文件夹: ${materialsFolder}`;
-                infoSpan.textContent = `(${materialsFiles.length} 个文件)`;
+
+                // 分类统计
+                const imageFiles = materialsFiles.filter(f => f.type === 'image');
+                const audioFiles = materialsFiles.filter(f => f.type === 'audio');
+                const videoFiles = materialsFiles.filter(f => f.type === 'video');
+                const otherFiles = materialsFiles.filter(f => f.type === 'unknown');
+
+                infoSpan.textContent = `(图片:${imageFiles.length} 音频:${audioFiles.length})`;
                 uploadBtn.disabled = !isLoggedIn;
 
-                // 显示文件列表
+                // 显示文件列表（按类型分组）
                 listDiv.innerHTML = '';
-                materialsFiles.forEach(file => {
-                    const div = document.createElement('div');
-                    div.className = 'status-item status-info';
-                    div.style.padding = '4px 8px';
-                    div.style.marginBottom = '4px';
-                    div.textContent = file.name;
-                    listDiv.appendChild(div);
-                });
+
+                // 图片文件
+                if (imageFiles.length > 0) {
+                    const imgHeader = document.createElement('div');
+                    imgHeader.style.cssText = 'color: #4ade80; margin: 8px 0 4px; font-weight: bold;';
+                    imgHeader.textContent = `📷 图片 (${imageFiles.length})`;
+                    listDiv.appendChild(imgHeader);
+
+                    imageFiles.forEach(file => {
+                        const div = document.createElement('div');
+                        div.className = 'status-item status-success';
+                        div.style.cssText = 'padding: 2px 8px; margin-bottom: 2px; font-size: 11px;';
+                        div.textContent = file.name;
+                        listDiv.appendChild(div);
+                    });
+                }
+
+                // 音频文件
+                if (audioFiles.length > 0) {
+                    const audioHeader = document.createElement('div');
+                    audioHeader.style.cssText = 'color: #60a5fa; margin: 8px 0 4px; font-weight: bold;';
+                    audioHeader.textContent = `🎵 音频 (${audioFiles.length})`;
+                    listDiv.appendChild(audioHeader);
+
+                    audioFiles.forEach(file => {
+                        const div = document.createElement('div');
+                        div.className = 'status-item status-info';
+                        div.style.cssText = 'padding: 2px 8px; margin-bottom: 2px; font-size: 11px; background: rgba(96, 165, 250, 0.2);';
+                        div.textContent = file.name;
+                        listDiv.appendChild(div);
+                    });
+                }
+
+                // 视频文件
+                if (videoFiles.length > 0) {
+                    const videoHeader = document.createElement('div');
+                    videoHeader.style.cssText = 'color: #f59e0b; margin: 8px 0 4px; font-weight: bold;';
+                    videoHeader.textContent = `🎬 视频 (${videoFiles.length})`;
+                    listDiv.appendChild(videoHeader);
+
+                    videoFiles.forEach(file => {
+                        const div = document.createElement('div');
+                        div.className = 'status-item status-warning';
+                        div.style.cssText = 'padding: 2px 8px; margin-bottom: 2px; font-size: 11px;';
+                        div.textContent = file.name;
+                        listDiv.appendChild(div);
+                    });
+                }
+
+                // 其他文件（不显示或折叠）
+                if (otherFiles.length > 0) {
+                    const otherHeader = document.createElement('div');
+                    otherHeader.style.cssText = 'color: #888; margin: 8px 0 4px;';
+                    otherHeader.textContent = `📁 其他文件 (${otherFiles.length}) - 已忽略`;
+                    listDiv.appendChild(otherHeader);
+                }
+
             } else {
                 folderDiv.textContent = '';
                 infoSpan.textContent = '';
