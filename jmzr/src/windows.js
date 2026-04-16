@@ -977,26 +977,10 @@ async function analyzePageStructure(windowId = null) {
  * 设置默认生成参数
  * 国际版流程: AI Video → Omni reference → Seedance 2.0 Fast (非VIP) → 9:16 → 15s
  */
-async function setDefaultGenerateParams(windowId = null) {
-    // 确定目标窗口
-    let targetWindow = null;
+async function setDefaultGenerateParams() {
+    if (!jimengWindow || jimengWindow.isDestroyed()) return;
 
-    if (windowId) {
-        // 尝试从账号窗口中获取
-        targetWindow = getAccountWindow(windowId);
-    }
-
-    // 如果没找到，使用主窗口
-    if (!targetWindow) {
-        targetWindow = jimengWindow;
-    }
-
-    if (!targetWindow || targetWindow.isDestroyed()) {
-        log.error('没有可用的窗口来设置参数');
-        return { success: false, error: '没有可用的窗口' };
-    }
-
-    log.info('设置默认生成参数... 目标窗口:', windowId || '主窗口');
+    log.info('设置默认生成参数...');
 
     // 延迟等待页面完全渲染
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1295,7 +1279,7 @@ async function setDefaultGenerateParams(windowId = null) {
     `;
 
     try {
-        const jsonStr = await targetWindow.webContents.executeJavaScript(paramsScript);
+        const jsonStr = await jimengWindow.webContents.executeJavaScript(paramsScript);
         const result = JSON.parse(jsonStr);
 
         // 打印结果
@@ -1309,9 +1293,6 @@ async function setDefaultGenerateParams(windowId = null) {
             });
         }
 
-        // 添加 windowId 到结果中
-        result.windowId = windowId;
-
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('params-set', result);
         }
@@ -1319,7 +1300,7 @@ async function setDefaultGenerateParams(windowId = null) {
         return result;
     } catch (error) {
         log.error('设置参数失败:', error);
-        return { success: false, error: error.message, windowId: windowId };
+        return { success: false, error: error.message };
     }
 }
 
@@ -1397,24 +1378,21 @@ async function loginWithEmail(email, password) {
 
     // 检查是否已有该账号的窗口
     let targetWindow = accountWindows.get(partition);
-    let windowExists = false;
 
     if (targetWindow && !targetWindow.isDestroyed()) {
-        log.info(`账号 ${email} 的窗口已存在，重新执行登录脚本`);
+        log.info(`账号 ${email} 的窗口已存在，聚焦窗口`);
         targetWindow.focus();
-        windowExists = true;
-        // 不直接返回，而是继续执行登录脚本
+        return { success: true, message: '窗口已存在', email };
     }
 
-    // 如果窗口不存在，创建新窗口
-    if (!windowExists) {
-        targetWindow = new BrowserWindow({
-            width: 1400,
-            height: 900,
-            webPreferences: {
-                nodeIntegration: false,
-                contextIsolation: true,
-                preload: path.join(__dirname, '..', 'preload.js'),
+    // 创建新窗口
+    targetWindow = new BrowserWindow({
+        width: 1400,
+        height: 900,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            preload: path.join(__dirname, '..', 'preload.js'),
             webSecurity: false,
             partition: partition
         },
@@ -1474,15 +1452,6 @@ async function loginWithEmail(email, password) {
 
     // 保存到账号窗口映射
     accountWindows.set(partition, targetWindow);
-
-    } // 结束 if (!windowExists)
-
-    // 以下是登录脚本执行（无论窗口是新创建还是已存在都会执行）
-
-    // 如果窗口已存在，等待一下确保页面就绪
-    if (windowExists) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-    }
 
     // 等待页面加载完成
     await new Promise(resolve => {
@@ -2738,6 +2707,111 @@ function getLoggedInAccounts() {
     return accounts;
 }
 
+/**
+ * 重试登录 - 对已打开的窗口重新执行登录脚本
+ */
+async function retryLogin(windowId) {
+    const targetWindow = getAccountWindow(windowId);
+    if (!targetWindow || targetWindow.isDestroyed()) {
+        return { success: false, error: '窗口不存在或已关闭' };
+    }
+
+    // 从 windowId 中提取邮箱
+    const emailMatch = windowId.match(/jimeng_(.+)/);
+    const email = emailMatch ? emailMatch[1].replace(/_/g, '@') : 'unknown';
+
+    log.info(`重试登录: ${email}`);
+
+    // 执行登录脚本
+    const loginScript = `
+        (async function() {
+            async function sleep(ms) {
+                return new Promise(function(r) { setTimeout(r, ms); });
+            }
+
+            try {
+                // 检查是否已登录
+                var items = document.querySelectorAll('.lv-menu-item');
+                for (var i = 0; i < items.length; i++) {
+                    var text = items[i].textContent.trim();
+                    if (/^[0-9]+Upgrade/i.test(text)) {
+                        return JSON.stringify({ success: true, message: '已登录' });
+                    }
+                }
+
+                // 步骤1：点击登录按钮
+                console.log('步骤1: 点击登录按钮...');
+                var loginButton = document.querySelector('div[class*="login-button-"]') ||
+                                 document.querySelector('.login-button');
+
+                if (!loginButton) {
+                    const allDivs = document.querySelectorAll('div');
+                    for (const div of allDivs) {
+                        if (div.textContent && (div.textContent.trim() === 'Sign in' || div.textContent.trim() === '登录')) {
+                            loginButton = div;
+                            break;
+                        }
+                    }
+                }
+
+                if (loginButton) {
+                    loginButton.click();
+                    await sleep(1000);
+                }
+
+                // 步骤2：点击邮箱登录选项
+                await sleep(500);
+                let emailLogin = null;
+                const wrappers = document.querySelectorAll('.lv_new_third_part_sign_in_expand-wrapper');
+                for (const wrapper of wrappers) {
+                    const btn = wrapper.querySelector('.lv_new_sign_in_method_button-expandButton');
+                    if (btn) {
+                        btn.click();
+                        await sleep(500);
+                        break;
+                    }
+                }
+
+                const emailBtns = document.querySelectorAll('.lv_new_sign_in_method_button-buttonWrapper');
+                for (const btn of emailBtns) {
+                    const label = btn.querySelector('.lv_new_sign_in_method_button-label');
+                    if (label && (label.textContent.includes('email') || label.textContent.includes('邮箱'))) {
+                        btn.click();
+                        await sleep(800);
+                        break;
+                    }
+                }
+
+                return JSON.stringify({ success: true, message: '登录弹窗已打开，请手动输入' });
+
+            } catch (error) {
+                return JSON.stringify({ success: false, error: error.message });
+            }
+        })();
+    `;
+
+    try {
+        const result = await targetWindow.webContents.executeJavaScript(loginScript);
+        return JSON.parse(result);
+    } catch (error) {
+        log.error('重试登录失败:', error);
+        return { success: false, error: error.message };
+    }
+}
+
+/**
+ * 为指定窗口设置默认参数
+ */
+async function setParamsForWindow(windowId) {
+    const targetWindow = getAccountWindow(windowId);
+    if (!targetWindow || targetWindow.isDestroyed()) {
+        return { success: false, error: '窗口不存在或已关闭' };
+    }
+
+    log.info(`为窗口 ${windowId} 设置默认参数`);
+    return await setDefaultGenerateParamsForWindow(targetWindow, windowId);
+}
+
 module.exports = {
     createMainWindow,
     createJimengWindow,
@@ -2747,6 +2821,8 @@ module.exports = {
     checkLoginStatus,
     showLoginQRCode,
     loginWithEmail,
+    retryLogin,
+    setParamsForWindow,
     autoHandlePopups,
     analyzePageStructure,
     setDefaultGenerateParams,

@@ -339,10 +339,14 @@
                 <select id="startAccountSelect" style="margin-bottom: 8px;">
                 </select>
                 <button class="btn btn-primary" id="copyAccountBtn" style="margin-left: 8px; padding: 4px 8px; font-size: 11px;">复制账号</button>
+                <!-- 手动重试按钮区域 -->
+                <div style="display: flex; gap: 8px; margin-top: 8px;">
+                    <button class="btn btn-warning" id="retryLoginBtn" disabled style="flex: 1;">重试登录</button>
+                    <button class="btn btn-info" id="setParamsBtn" disabled style="flex: 1;">设置默认参数</button>
+                </div>
             </div>
             <button class="btn btn-primary" id="loadAccountsBtn">加载账号文件</button>
             <button class="btn btn-success" id="loginBtn" disabled>邮箱登录选中账号</button>
-            <button class="btn btn-warning" id="setDefaultParamsBtn" disabled style="margin-left: 8px;">设置默认参数</button>
             <div id="loggedInAccounts" style="margin-top: 8px; font-size: 12px;"></div>
 
             <!-- 任务提交区域 -->
@@ -676,21 +680,6 @@
             log(`已复制账号: ${email}`, 'success');
         });
 
-        // 设置默认参数按钮
-        document.getElementById('setDefaultParamsBtn').addEventListener('click', async () => {
-            if (!currentWindowId) {
-                log('请先选择一个已登录的账号窗口', 'warning');
-                return;
-            }
-            log('手动设置默认参数...', 'info');
-            const result = await ipcRenderer.invoke('set-default-params', currentWindowId);
-            if (result && result.success) {
-                log('默认参数设置成功', 'success');
-            } else {
-                log('默认参数设置失败: ' + (result?.error || '未知错误'), 'error');
-            }
-        });
-
         // 已登录账号列表和当前选中窗口
         let loggedInAccounts = []; // [{email, windowId}]
         let currentWindowId = null;
@@ -727,7 +716,57 @@
             setCurrentWindow(windowId, email);
             updateLoggedInAccountsUI();
 
+            // 启用手动重试按钮
+            document.getElementById('retryLoginBtn').disabled = false;
+            document.getElementById('setParamsBtn').disabled = false;
             document.getElementById('loginBtn').disabled = false;
+        });
+
+        // 重试登录按钮 - 对当前选中的窗口重新执行登录
+        document.getElementById('retryLoginBtn').addEventListener('click', async () => {
+            if (!currentWindowId) {
+                log('请先登录一个账号', 'error');
+                return;
+            }
+            const account = loggedInAccounts.find(a => a.windowId === currentWindowId);
+            if (!account) {
+                log('找不到当前账号', 'error');
+                return;
+            }
+
+            log(`重试登录: ${account.email}...`, 'info');
+            document.getElementById('retryLoginBtn').disabled = true;
+
+            const result = await ipcRenderer.invoke('retry-login', { windowId: currentWindowId });
+
+            if (result.success) {
+                log('登录重试成功', 'success');
+            } else {
+                log(`登录重试失败: ${result.error}`, 'error');
+            }
+
+            document.getElementById('retryLoginBtn').disabled = false;
+        });
+
+        // 设置默认参数按钮 - 对当前选中的窗口设置参数
+        document.getElementById('setParamsBtn').addEventListener('click', async () => {
+            if (!currentWindowId) {
+                log('请先登录一个账号', 'error');
+                return;
+            }
+
+            log('手动设置默认参数...', 'info');
+            document.getElementById('setParamsBtn').disabled = true;
+
+            const result = await ipcRenderer.invoke('set-params-for-window', { windowId: currentWindowId });
+
+            if (result.success) {
+                log('参数设置成功', 'success');
+            } else {
+                log(`参数设置失败: ${result.error}`, 'error');
+            }
+
+            document.getElementById('setParamsBtn').disabled = false;
         });
 
         // 设置当前窗口
@@ -737,8 +776,6 @@
             document.getElementById('currentWindowTitle').textContent = email;
             // 提交按钮始终可用（只要有窗口被选中）
             document.getElementById('submitTaskBtn').disabled = false;
-            // 启用设置默认参数按钮
-            document.getElementById('setDefaultParamsBtn').disabled = false;
         }
 
         // 更新已登录账号列表UI

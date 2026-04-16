@@ -122,8 +122,8 @@ function registerIpcHandlers() {
     });
 
     // 设置默认参数
-    ipcMain.handle('set-default-params', async (event, windowId = null) => {
-        return await windows.setDefaultGenerateParams(windowId);
+    ipcMain.handle('set-default-params', async () => {
+        return await windows.setDefaultGenerateParams();
     });
 
     // 分析页面结构
@@ -152,6 +152,16 @@ function registerIpcHandlers() {
     // 邮箱密码登录（每个账号独立窗口）
     ipcMain.handle('login-with-email', async (event, { email, password }) => {
         return await windows.loginWithEmail(email, password);
+    });
+
+    // 重试登录（对已打开的窗口重新执行登录）
+    ipcMain.handle('retry-login', async (event, { windowId }) => {
+        return await windows.retryLogin(windowId);
+    });
+
+    // 为指定窗口设置默认参数
+    ipcMain.handle('set-params-for-window', async (event, { windowId }) => {
+        return await windows.setParamsForWindow(windowId);
     });
 
     // 选择素材文件夹
