@@ -188,7 +188,14 @@ function getAccount(index) {
 async function selectMaterialsFolder(dialog, mainWindow) {
     const result = await dialog.showOpenDialog(mainWindow, {
         properties: ['openDirectory'],
-        title: '选择素材文件夹 (支持: png, jpg, mp3, wav 等格式)'
+        title: '选择素材文件夹 (支持: png, jpg, mp3, wav 等格式)',
+        filters: [
+            { name: '素材文件', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'mp3', 'wav', 'mp4', 'mov'] },
+            { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] },
+            { name: '音频', extensions: ['mp3', 'wav'] },
+            { name: '视频', extensions: ['mp4', 'mov'] },
+            { name: '所有文件', extensions: ['*'] }
+        ]
     });
 
     if (result.canceled || result.filePaths.length === 0) {
