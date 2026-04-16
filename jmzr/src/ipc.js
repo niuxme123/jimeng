@@ -155,8 +155,8 @@ function registerIpcHandlers() {
     });
 
     // 重试登录（对已打开的窗口重新执行登录）
-    ipcMain.handle('retry-login', async (event, { windowId }) => {
-        return await windows.retryLogin(windowId);
+    ipcMain.handle('retry-login', async (event, { windowId, email, password }) => {
+        return await windows.retryLogin(windowId, email, password);
     });
 
     // 为指定窗口设置默认参数

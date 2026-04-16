@@ -2709,20 +2709,19 @@ function getLoggedInAccounts() {
 
 /**
  * 重试登录 - 对已打开的窗口重新执行登录脚本
+ * @param {string} windowId - 窗口ID
+ * @param {string} email - 邮箱
+ * @param {string} password - 密码
  */
-async function retryLogin(windowId) {
+async function retryLogin(windowId, email, password) {
     const targetWindow = getAccountWindow(windowId);
     if (!targetWindow || targetWindow.isDestroyed()) {
         return { success: false, error: '窗口不存在或已关闭' };
     }
 
-    // 从 windowId 中提取邮箱
-    const emailMatch = windowId.match(/jimeng_(.+)/);
-    const email = emailMatch ? emailMatch[1].replace(/_/g, '@') : 'unknown';
-
     log.info(`重试登录: ${email}`);
 
-    // 执行登录脚本
+    // 执行完整登录脚本
     const loginScript = `
         (async function() {
             async function sleep(ms) {
@@ -2741,7 +2740,7 @@ async function retryLogin(windowId) {
 
                 // 步骤1：点击登录按钮
                 console.log('步骤1: 点击登录按钮...');
-                var loginButton = document.querySelector('div[class*="login-button-"]') ||
+                let loginButton = document.querySelector('div[class*="login-button-"]') ||
                                  document.querySelector('.login-button');
 
                 if (!loginButton) {
@@ -2756,33 +2755,127 @@ async function retryLogin(windowId) {
 
                 if (loginButton) {
                     loginButton.click();
+                    console.log('已点击登录按钮');
                     await sleep(1000);
                 }
 
-                // 步骤2：点击邮箱登录选项
+                // 步骤2：等待邮箱登录选项出现并点击
+                console.log('步骤2: 等待邮箱登录选项...');
                 await sleep(500);
+
                 let emailLogin = null;
                 const wrappers = document.querySelectorAll('.lv_new_third_part_sign_in_expand-wrapper');
+                console.log('找到 ' + wrappers.length + ' 个登录选项wrapper');
+
                 for (const wrapper of wrappers) {
-                    const btn = wrapper.querySelector('.lv_new_sign_in_method_button-expandButton');
-                    if (btn) {
-                        btn.click();
-                        await sleep(500);
-                        break;
+                    const button = wrapper.querySelector('.lv_new_third_part_sign_in_expand-button');
+                    if (button) {
+                        const span = button.querySelector('.lv_new_third_part_sign_in_expand-label');
+                        const spanText = span ? span.textContent.trim() : '';
+                        console.log('检查wrapper中的按钮文本: "' + spanText + '"');
+
+                        if (spanText === '使用電子郵件繼續' || spanText === '使用电子邮件继续' || spanText === 'Continue with email') {
+                            emailLogin = button;
+                            console.log('✓ 通过精确文本匹配找到邮箱登录按钮');
+                            break;
+                        }
                     }
                 }
 
-                const emailBtns = document.querySelectorAll('.lv_new_sign_in_method_button-buttonWrapper');
-                for (const btn of emailBtns) {
-                    const label = btn.querySelector('.lv_new_sign_in_method_button-label');
-                    if (label && (label.textContent.includes('email') || label.textContent.includes('邮箱'))) {
-                        btn.click();
-                        await sleep(800);
-                        break;
+                // 备用方案
+                if (!emailLogin) {
+                    const allButtons = document.querySelectorAll('.lv_new_third_part_sign_in_expand-button');
+                    for (const button of allButtons) {
+                        const span = button.querySelector('.lv_new_third_part_sign_in_expand-label');
+                        if (span) {
+                            const spanText = span.textContent || '';
+                            if (spanText.includes('電子郵件') || spanText.includes('电子邮件') || spanText.includes('email')) {
+                                if (!spanText.includes('Google') && !spanText.includes('谷歌')) {
+                                    emailLogin = button;
+                                    console.log('通过span文本找到邮箱登录按钮');
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
 
-                return JSON.stringify({ success: true, message: '登录弹窗已打开，请手动输入' });
+                if (!emailLogin) {
+                    return JSON.stringify({ success: false, error: '无法找到邮箱登录选项' });
+                }
+
+                emailLogin.click();
+                console.log('已点击邮箱登录');
+                await sleep(1500);
+
+                // 步骤3：填充邮箱账号
+                console.log('步骤3: 填充邮箱地址...');
+                let emailInput = document.querySelector('input[placeholder*="電子郵件"]') ||
+                                document.querySelector('input[placeholder*="email"]') ||
+                                document.querySelector('input[type="email"]') ||
+                                document.querySelector('input[placeholder*="邮件"]');
+
+                if (!emailInput) {
+                    emailInput = document.querySelector('input[type="email"]') ||
+                                document.querySelector('input[name*="email"]') ||
+                                document.querySelector('input[id*="email"]');
+                }
+
+                if (!emailInput) {
+                    return JSON.stringify({ success: false, error: '未找到邮箱输入框' });
+                }
+
+                // 使用 React 的方式填充值
+                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                nativeInputValueSetter.call(emailInput, '${email}');
+                emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+                emailInput.dispatchEvent(new Event('change', { bubbles: true }));
+                console.log('已填充邮箱地址');
+
+                // 步骤4：填充密码
+                console.log('步骤4: 填充密码...');
+                let passwordInput = document.querySelector('input[type="password"]');
+
+                if (!passwordInput) {
+                    passwordInput = document.querySelector('input[placeholder*="密碼"]') ||
+                                   document.querySelector('input[placeholder*="password"]') ||
+                                   document.querySelector('input[placeholder*="密码"]');
+                }
+
+                if (!passwordInput) {
+                    return JSON.stringify({ success: false, error: '未找到密码输入框' });
+                }
+
+                nativeInputValueSetter.call(passwordInput, '${password}');
+                passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
+                passwordInput.dispatchEvent(new Event('change', { bubbles: true }));
+                console.log('已填充密码');
+
+                await sleep(500);
+
+                // 步骤5：点击继续按钮
+                console.log('步骤5: 点击继续按钮...');
+                let continueButton = document.querySelector('button.lv_new_sign_in_panel_wide-sign-in-button.lv_new_sign_in_panel_wide-primary-button');
+
+                if (!continueButton) {
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const text = (btn.textContent || '').trim();
+                        if (text === 'Continue' || text === '继续' || text === '登錄' || text === '登录' || text === 'Sign in') {
+                            continueButton = btn;
+                            break;
+                        }
+                    }
+                }
+
+                if (!continueButton) {
+                    return JSON.stringify({ success: false, error: '未找到Continue按钮' });
+                }
+
+                continueButton.click();
+                console.log('已点击Continue按钮');
+
+                return JSON.stringify({ success: true, message: '登录请求已提交' });
 
             } catch (error) {
                 return JSON.stringify({ success: false, error: error.message });

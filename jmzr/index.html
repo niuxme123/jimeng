@@ -734,10 +734,18 @@
                 return;
             }
 
+            // 从 accounts 列表中获取密码
+            const originalAccount = accounts.find(a => (a.email || a) === account.email);
+            const password = originalAccount?.password || 'Cyh0711666';
+
             log(`重试登录: ${account.email}...`, 'info');
             document.getElementById('retryLoginBtn').disabled = true;
 
-            const result = await ipcRenderer.invoke('retry-login', { windowId: currentWindowId });
+            const result = await ipcRenderer.invoke('retry-login', {
+                windowId: currentWindowId,
+                email: account.email,
+                password: password
+            });
 
             if (result.success) {
                 log('登录重试成功', 'success');
