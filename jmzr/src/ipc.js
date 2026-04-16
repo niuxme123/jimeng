@@ -122,8 +122,8 @@ function registerIpcHandlers() {
     });
 
     // 设置默认参数
-    ipcMain.handle('set-default-params', async () => {
-        return await windows.setDefaultGenerateParams();
+    ipcMain.handle('set-default-params', async (event, windowId = null) => {
+        return await windows.setDefaultGenerateParams(windowId);
     });
 
     // 分析页面结构

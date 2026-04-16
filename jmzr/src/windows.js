@@ -977,10 +977,26 @@ async function analyzePageStructure(windowId = null) {
  * 设置默认生成参数
  * 国际版流程: AI Video → Omni reference → Seedance 2.0 Fast (非VIP) → 9:16 → 15s
  */
-async function setDefaultGenerateParams() {
-    if (!jimengWindow || jimengWindow.isDestroyed()) return;
+async function setDefaultGenerateParams(windowId = null) {
+    // 确定目标窗口
+    let targetWindow = null;
 
-    log.info('设置默认生成参数...');
+    if (windowId) {
+        // 尝试从账号窗口中获取
+        targetWindow = getAccountWindow(windowId);
+    }
+
+    // 如果没找到，使用主窗口
+    if (!targetWindow) {
+        targetWindow = jimengWindow;
+    }
+
+    if (!targetWindow || targetWindow.isDestroyed()) {
+        log.error('没有可用的窗口来设置参数');
+        return { success: false, error: '没有可用的窗口' };
+    }
+
+    log.info('设置默认生成参数... 目标窗口:', windowId || '主窗口');
 
     // 延迟等待页面完全渲染
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1279,7 +1295,7 @@ async function setDefaultGenerateParams() {
     `;
 
     try {
-        const jsonStr = await jimengWindow.webContents.executeJavaScript(paramsScript);
+        const jsonStr = await targetWindow.webContents.executeJavaScript(paramsScript);
         const result = JSON.parse(jsonStr);
 
         // 打印结果
@@ -1293,6 +1309,9 @@ async function setDefaultGenerateParams() {
             });
         }
 
+        // 添加 windowId 到结果中
+        result.windowId = windowId;
+
         if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('params-set', result);
         }
@@ -1300,7 +1319,7 @@ async function setDefaultGenerateParams() {
         return result;
     } catch (error) {
         log.error('设置参数失败:', error);
-        return { success: false, error: error.message };
+        return { success: false, error: error.message, windowId: windowId };
     }
 }
 
