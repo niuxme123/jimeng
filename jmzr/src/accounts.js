@@ -304,8 +304,8 @@ function getFileType(ext) {
  * - 场景为XXX / 场景是XXX / 场景:XXX / 场景：XXX
  * - 道具为XXX / 道具是XXX / 道具:XXX / 道具：XXX
  * - 人物为XXX / 人物是XXX / 人物:XXX / 人物：XXX
- * - 人物支持多值，用顿号、逗号、空格、数字序号等分隔
- * - 人物名称后的数字标识会保留，如：苏念1、林峰2
+ * - 人物支持多值，用顿号、逗号分隔
+ * - 人物名称后的数字标识会自动去掉，如：苏念1、林峰2 → ["苏念", "林峰"]
  */
 function parsePromptText(promptText) {
     const result = {
@@ -322,6 +322,14 @@ function parsePromptText(promptText) {
         return text
             .trim()
             .replace(/[）)\（(].*$/g, '')  // 去掉括号及之后的内容
+            .trim();
+    };
+
+    // 辅助函数：清理人物名称（去掉末尾的数字）
+    const cleanCharacterName = (name) => {
+        return name
+            .trim()
+            .replace(/[0-9]+$/, '')  // 去掉末尾的数字
             .trim();
     };
 
@@ -346,26 +354,28 @@ function parsePromptText(promptText) {
     }
 
     // 提取人物：支持多种格式
-    // 人物可以有多个，支持多种分隔符：顿号、逗号、空格、数字序号、特殊符号
+    // 人物可以有多个，支持顿号、逗号分隔
+    // 人物名后的数字标识会被去掉：苏念1、林峰2 → ["苏念", "林峰"]
     let characterMatch = promptText.match(/人物[为是：:]([^）)\（\n]+)/);
     if (characterMatch) {
         let characterText = cleanText(characterMatch[1]);
         if (characterText) {
             log.info(`原始人物文本: "${characterText}"`);
 
-            // 分割：顿号、逗号等分隔符
-            // 注意：不要去掉人物名后面的数字标识（如 苏念1、林峰2）
-            // 格式可能是：苏念1、林峰2 或 1.苏念 2.林峰 或 苏念1 林峰2
+            // 用顿号、逗号分隔
             const characters = characterText.split(/[、，,]+/).filter(s => s.trim());
 
             characters.forEach(char => {
                 let trimmed = char.trim();
 
                 // 如果是 "1.苏念" 或 "1、苏念" 格式，去掉前面的序号
-                const match = trimmed.match(/^[0-9]+[.、．:：]\s*(.+)$/);
-                if (match) {
-                    trimmed = match[1].trim();
+                const prefixMatch = trimmed.match(/^[0-9]+[.、．:：]\s*(.+)$/);
+                if (prefixMatch) {
+                    trimmed = prefixMatch[1].trim();
                 }
+
+                // 去掉人物名末尾的数字标识（如 苏念1 → 苏念）
+                trimmed = cleanCharacterName(trimmed);
 
                 if (trimmed && !result.characters.includes(trimmed)) {
                     result.characters.push(trimmed);
