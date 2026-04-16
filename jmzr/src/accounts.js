@@ -304,6 +304,7 @@ function getFileType(ext) {
  * - 场景为XXX / 场景是XXX / 场景:XXX / 场景：XXX
  * - 道具为XXX / 道具是XXX / 道具:XXX / 道具：XXX
  * - 人物为XXX / 人物是XXX / 人物:XXX / 人物：XXX
+ * - 人物支持多值，用顿号、逗号、空格、数字序号等分隔
  */
 function parsePromptText(promptText) {
     const result = {
@@ -315,7 +316,7 @@ function parsePromptText(promptText) {
 
     log.info('开始解析文案...');
 
-    // 辅助函数：清理提取的文本（去掉括号、后面的逗号等）
+    // 辅助函数：清理提取的文本
     const cleanText = (text) => {
         return text
             .trim()
@@ -324,8 +325,6 @@ function parsePromptText(promptText) {
     };
 
     // 提取场景：支持多种格式
-    // 格式1: 场景为XXX / 场景是XXX
-    // 格式2: 场景:XXX / 场景：XXX
     let sceneMatch = promptText.match(/场景[为是：:]([^）)\（(，。,\n]+)/);
     if (sceneMatch) {
         const scene = cleanText(sceneMatch[1]);
@@ -346,16 +345,17 @@ function parsePromptText(promptText) {
     }
 
     // 提取人物：支持多种格式
-    // 格式1: 人物为XXX / 人物是XXX
-    // 格式2: 人物:XXX / 人物：XXX
-    // 人物可以有多个，用空格或顿号分隔
+    // 人物可以有多个，支持多种分隔符：顿号、逗号、空格、数字序号、特殊符号
     let characterMatch = promptText.match(/人物[为是：:]([^）)\（\n]+)/);
     if (characterMatch) {
         let characterText = cleanText(characterMatch[1]);
         if (characterText) {
-            // 支持多种分隔符：顿号、逗号、空格
-            // 但要注意不要把顿号当成普通字符分割
-            const characters = characterText.split(/[、，,\s]+/).filter(s => s.trim());
+            // 用正则分割：支持顿号、逗号、空格、数字加点(如 1. 2.)、数字加顿号(如 1、2、)
+            // 先把数字序号去掉，再用分隔符分割
+            characterText = characterText.replace(/[0-9]+[.、．:：]?\s*/g, '');
+
+            // 分割：顿号、逗号、空格、斜杠等
+            const characters = characterText.split(/[、，,\\/\s]+/).filter(s => s.trim());
             characters.forEach(char => {
                 const trimmed = char.trim();
                 if (trimmed && !result.characters.includes(trimmed)) {
@@ -363,26 +363,6 @@ function parsePromptText(promptText) {
                     log.info(`解析到人物: "${trimmed}"`);
                 }
             });
-        }
-    }
-
-    // 如果没有用关键字提取到人物，尝试提取括号里的人物名
-    // 格式: [镜头：XXX]阿俊对助理(说)："..."
-    if (result.characters.length === 0) {
-        // 尝试从对话格式中提取人物
-        // 匹配: XXX对YYY(说) 或 XXX对YYY说
-        const dialogueMatches = promptText.matchAll(/([^\s\n对]+)对([^\s\n（(]+)[（(说]*[）)]?说/g);
-        for (const match of dialogueMatches) {
-            const speaker = match[1].trim();
-            const listener = match[2].trim();
-            if (speaker && !result.characters.includes(speaker)) {
-                result.characters.push(speaker);
-                log.info(`从对话中解析到说话人: "${speaker}"`);
-            }
-            if (listener && !result.characters.includes(listener)) {
-                result.characters.push(listener);
-                log.info(`从对话中解析到听话人: "${listener}"`);
-            }
         }
     }
 
