@@ -300,6 +300,10 @@ function getFileType(ext) {
 
 /**
  * 解析文案，提取场景、道具、人物信息
+ * 支持多种格式：
+ * - 场景为XXX / 场景是XXX / 场景:XXX / 场景：XXX
+ * - 道具为XXX / 道具是XXX / 道具:XXX / 道具：XXX
+ * - 人物为XXX / 人物是XXX / 人物:XXX / 人物：XXX
  */
 function parsePromptText(promptText) {
     const result = {
@@ -311,41 +315,74 @@ function parsePromptText(promptText) {
 
     log.info('开始解析文案...');
 
-    // 辅助函数：清理提取的文本（去掉括号、逗号等）
+    // 辅助函数：清理提取的文本（去掉括号、后面的逗号等）
     const cleanText = (text) => {
         return text
             .trim()
-            .replace(/[）)\（(,，。].*$/g, '')  // 去掉括号及之后的内容
+            .replace(/[）)\（(].*$/g, '')  // 去掉括号及之后的内容
             .trim();
     };
 
-    // 提取场景：场景为XXX 或 场景是XXX（排除括号、逗号等）
-    const sceneMatch = promptText.match(/场景[为是]([^）)\（(，。,\n]+)/);
+    // 提取场景：支持多种格式
+    // 格式1: 场景为XXX / 场景是XXX
+    // 格式2: 场景:XXX / 场景：XXX
+    let sceneMatch = promptText.match(/场景[为是：:]([^）)\（(，。,\n]+)/);
     if (sceneMatch) {
-        const scene = sceneMatch[1].trim();
+        const scene = cleanText(sceneMatch[1]);
         if (scene) {
             result.scenes.push(scene);
             log.info(`解析到场景: "${scene}"`);
         }
     }
 
-    // 提取道具：道具为XXX 或 道具是XXX（排除括号、逗号等）
-    const propMatch = promptText.match(/道具[为是]([^）)\（(，。,\n]+)/);
+    // 提取道具：支持多种格式
+    let propMatch = promptText.match(/道具[为是：:]([^）)\（(，。,\n]+)/);
     if (propMatch) {
-        const prop = propMatch[1].trim();
+        const prop = cleanText(propMatch[1]);
         if (prop) {
             result.props.push(prop);
             log.info(`解析到道具: "${prop}"`);
         }
     }
 
-    // 提取人物：人物为XXX 或 人物是XXX（排除括号、逗号等）
-    const characterMatch = promptText.match(/人物[为是]([^）)\（(，。,\n]+)/);
+    // 提取人物：支持多种格式
+    // 格式1: 人物为XXX / 人物是XXX
+    // 格式2: 人物:XXX / 人物：XXX
+    // 人物可以有多个，用空格或顿号分隔
+    let characterMatch = promptText.match(/人物[为是：:]([^）)\（\n]+)/);
     if (characterMatch) {
-        const character = characterMatch[1].trim();
-        if (character) {
-            result.characters.push(character);
-            log.info(`解析到人物: "${character}"`);
+        let characterText = cleanText(characterMatch[1]);
+        if (characterText) {
+            // 支持多种分隔符：顿号、逗号、空格
+            // 但要注意不要把顿号当成普通字符分割
+            const characters = characterText.split(/[、，,\s]+/).filter(s => s.trim());
+            characters.forEach(char => {
+                const trimmed = char.trim();
+                if (trimmed && !result.characters.includes(trimmed)) {
+                    result.characters.push(trimmed);
+                    log.info(`解析到人物: "${trimmed}"`);
+                }
+            });
+        }
+    }
+
+    // 如果没有用关键字提取到人物，尝试提取括号里的人物名
+    // 格式: [镜头：XXX]阿俊对助理(说)："..."
+    if (result.characters.length === 0) {
+        // 尝试从对话格式中提取人物
+        // 匹配: XXX对YYY(说) 或 XXX对YYY说
+        const dialogueMatches = promptText.matchAll(/([^\s\n对]+)对([^\s\n（(]+)[（(说]*[）)]?说/g);
+        for (const match of dialogueMatches) {
+            const speaker = match[1].trim();
+            const listener = match[2].trim();
+            if (speaker && !result.characters.includes(speaker)) {
+                result.characters.push(speaker);
+                log.info(`从对话中解析到说话人: "${speaker}"`);
+            }
+            if (listener && !result.characters.includes(listener)) {
+                result.characters.push(listener);
+                log.info(`从对话中解析到听话人: "${listener}"`);
+            }
         }
     }
 
