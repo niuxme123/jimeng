@@ -398,6 +398,7 @@ function parsePromptText(promptText) {
 /**
  * 从文案中提取有台词的人物
  * 只有实际有对话的人物才被识别为"有台词人物"
+ * 支持多种对话格式
  */
 function extractSpeakingCharacters(text) {
     const speakers = [];
@@ -405,49 +406,96 @@ function extractSpeakingCharacters(text) {
     // 移除镜头描述 [...], 避免干扰
     const cleanText = text.replace(/\[镜头[^\]]*\]/g, '');
 
-    // 模式1: xx对xx(情绪)说[：:]
-    // 例: 婆婆对大儿子(偏心)说：
-    const pattern1 = /([^\s\n、，,。！？]+?)对[^\s\n、，,。！？]+?\([^)]+\)说[：:]/g;
     let match;
+
+    // 模式1: A对B(情绪)说[：:]
+    // 例: 婆婆对大儿子(偏心)说： 婆婆对大儿子(理所当然/偏心)说：
+    const pattern1 = /([^\s\n、，,。！？]+?)对[^\s\n、，,。！？]+?\([^)]+\)说[：:]/g;
     while ((match = pattern1.exec(cleanText)) !== null) {
         const speaker = match[1].trim();
         if (speaker && !speakers.includes(speaker)) {
             speakers.push(speaker);
-            log.info(`从对话提取说话人(格式1): "${speaker}"`);
+            log.info(`从对话提取说话人(A对B(情绪)说): "${speaker}"`);
         }
     }
 
-    // 模式2: xx对xx说[：:]
+    // 模式2: A对B说[：:]
     // 例: 晓冉对婆婆说：
     const pattern2 = /([^\s\n、，,。！？]+?)对[^\s\n、，,。！？]+?说[：:]/g;
     while ((match = pattern2.exec(cleanText)) !== null) {
         const speaker = match[1].trim();
         if (speaker && !speakers.includes(speaker)) {
             speakers.push(speaker);
-            log.info(`从对话提取说话人(格式2): "${speaker}"`);
+            log.info(`从对话提取说话人(A对B说): "${speaker}"`);
         }
     }
 
-    // 模式3: xx(情绪)说[：:]
-    // 例: 大儿子(生气)说：
+    // 模式3: A(情绪)说[：:]
+    // 例: 大儿子(生气)说： 大儿子(无奈)说：
     const pattern3 = /([^\s\n、，,。！？]+?)\([^)]+\)说[：:]/g;
     while ((match = pattern3.exec(cleanText)) !== null) {
         const speaker = match[1].trim();
         if (speaker && !speakers.includes(speaker)) {
             speakers.push(speaker);
-            log.info(`从对话提取说话人(格式3): "${speaker}"`);
+            log.info(`从对话提取说话人(A(情绪)说): "${speaker}"`);
         }
     }
 
-    // 模式4: xx说[：:] 或 xx说道[：:]
-    // 例: 晓冉说： 或 晓冉说道：
+    // 模式4: A说[：:] 或 A说道[：:]
+    // 例: 晓冉说： 晓冉说道：
     const pattern4 = /([^\s\n、，,。！？]+?)(?:说|说道)[：:]/g;
     while ((match = pattern4.exec(cleanText)) !== null) {
         const speaker = match[1].trim();
         // 排除已被其他模式匹配的（包含"对"的）
         if (speaker && !speakers.includes(speaker) && !speaker.includes('对')) {
             speakers.push(speaker);
-            log.info(`从对话提取说话人(格式4): "${speaker}"`);
+            log.info(`从对话提取说话人(A说/说道): "${speaker}"`);
+        }
+    }
+
+    // 模式5: A笑着说[：:] A叹气说[：:] A无奈地说[：:] 等变体
+    // 例: 婆婆笑着说： 晓冉叹气说： 大儿子无奈地说：
+    // 注意：前面的情绪词必须是实际存在的，不能为空（否则会与模式4重复）
+    const emotionPatterns5 = ['笑着', '叹气', '无奈', '生气', '高兴', '激动', '冷静', '愤怒', '悲伤', '开心', '微笑', '大哭', '大喊', '小声', '大声', '淡淡', '冷冷', '温柔'];
+    const pattern5 = new RegExp(`([^\\s\\n、，,。！？]+?)(?:${emotionPatterns5.join('|')})(?:地)?说[：:]`, 'g');
+    while ((match = pattern5.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (speaker && !speakers.includes(speaker) && !speaker.includes('对')) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(A...说变体): "${speaker}"`);
+        }
+    }
+
+    // 模式6: A对B说道[：:]
+    // 例: 婆婆对大儿子说道：
+    const pattern6 = /([^\s\n、，,。！？]+?)对[^\s\n、，,。！？]+?说道[：:]/g;
+    while ((match = pattern6.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (speaker && !speakers.includes(speaker)) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(A对B说道): "${speaker}"`);
+        }
+    }
+
+    // 模式7: A对B(情绪)说道[：:]
+    // 例: 婆婆对大儿子(偏心)说道：
+    const pattern7 = /([^\s\n、，,。！？]+?)对[^\s\n、，,。！？]+?\([^)]+\)说道[：:]/g;
+    while ((match = pattern7.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (speaker && !speakers.includes(speaker)) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(A对B(情绪)说道): "${speaker}"`);
+        }
+    }
+
+    // 模式8: A对B笑着说[：:] 等组合变体
+    // 例: 婆婆对大儿子笑着说：
+    const pattern8 = new RegExp(`([^\\s\\n、，,。！？]+?)对[^\\s\\n、，,。！？]+?(?:${emotionPatterns5.join('|')})(?:地)?说[：:]`, 'g');
+    while ((match = pattern8.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (speaker && !speakers.includes(speaker)) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(A对B...说变体): "${speaker}"`);
         }
     }
 
