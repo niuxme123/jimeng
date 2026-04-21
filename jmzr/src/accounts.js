@@ -326,10 +326,11 @@ function parsePromptText(promptText) {
             .trim();
     };
 
-    // 辅助函数：清理人物名称（去掉末尾的数字）
+    // 辅助函数：清理人物名称（去掉括号描述、末尾数字）
     const cleanCharacterName = (name) => {
         return name
             .trim()
+            .replace(/[（\(][^）\)]*[）\)]/g, '')  // 去掉括号及其内容，如：（朴素憔悴）
             .replace(/[0-9]+$/, '')  // 去掉末尾的数字
             .trim();
     };
@@ -343,6 +344,11 @@ function parsePromptText(promptText) {
         const personIdx = scene.indexOf('人物');
         if (personIdx > 0) {
             scene = scene.substring(0, personIdx).trim();
+        }
+        // 去掉场景描述中的句号及之后的内容，如 "出租屋客厅。墙壁斑驳..."
+        const periodIdx = scene.indexOf('。');
+        if (periodIdx > 0) {
+            scene = scene.substring(0, periodIdx).trim();
         }
         if (scene) {
             result.scenes.push(scene);
@@ -361,16 +367,45 @@ function parsePromptText(promptText) {
     }
 
     // 提取人物：支持多种格式
-    // 人物可以有多个，支持顿号、逗号、空格分隔
+    // 人物可以有多个，支持顿号、逗号分隔
+    // 支持带括号描述的格式：林晓月（朴素憔悴）、王桂兰（刻薄市侩）
     // 人物名后的数字标识会被去掉：苏念1、林峰2 → ["苏念", "林峰"]
-    let characterMatch = promptText.match(/人物[为是：:]([^）)\（\n]+)/);
+    let characterMatch = promptText.match(/人物[为是：:](.+?)(?=\n|$)/);
     if (characterMatch) {
-        let characterText = cleanText(characterMatch[1]);
+        let characterText = characterMatch[1].trim();
         if (characterText) {
             log.info(`原始人物文本: "${characterText}"`);
 
-            // 用顿号、逗号、空格分隔
-            const characters = characterText.split(/[、，,\s]+/).filter(s => s.trim());
+            // 用顿号、逗号分隔（注意：括号内也可能有逗号，所以要先处理括号）
+            // 策略：按顿号、逗号分隔，但忽略括号内的分隔符
+            const characters = [];
+            let current = '';
+            let parenDepth = 0;
+
+            for (let i = 0; i < characterText.length; i++) {
+                const char = characterText[i];
+                if (char === '（' || char === '(') {
+                    parenDepth++;
+                    current += char;
+                } else if (char === '）' || char === ')') {
+                    parenDepth--;
+                    current += char;
+                } else if ((char === '、' || char === '，' || char === ',') && parenDepth === 0) {
+                    // 分隔符且不在括号内
+                    if (current.trim()) {
+                        characters.push(current.trim());
+                    }
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            // 添加最后一个
+            if (current.trim()) {
+                characters.push(current.trim());
+            }
+
+            log.info(`分隔后的人物列表: [${characters.join(', ')}]`);
 
             characters.forEach(char => {
                 let trimmed = char.trim();
@@ -381,7 +416,7 @@ function parsePromptText(promptText) {
                     trimmed = prefixMatch[1].trim();
                 }
 
-                // 去掉人物名末尾的数字标识（如 苏念1 → 苏念）
+                // 清理人物名称（去掉括号描述、末尾数字）
                 trimmed = cleanCharacterName(trimmed);
 
                 if (trimmed && !result.characters.includes(trimmed)) {
