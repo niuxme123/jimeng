@@ -312,6 +312,7 @@ function parsePromptText(promptText) {
         scenes: [],
         props: [],
         characters: [],
+        speakingCharacters: [],  // 有台词的人物
         cleanedText: promptText
     };
 
@@ -385,7 +386,72 @@ function parsePromptText(promptText) {
         }
     }
 
+    // 提取有台词的人物（从对话格式中识别）
+    result.speakingCharacters = extractSpeakingCharacters(promptText);
+    if (result.speakingCharacters.length > 0) {
+        log.info(`有台词的人物: [${result.speakingCharacters.join(', ')}]`);
+    }
+
     return result;
+}
+
+/**
+ * 从文案中提取有台词的人物
+ * 只有实际有对话的人物才被识别为"有台词人物"
+ */
+function extractSpeakingCharacters(text) {
+    const speakers = [];
+
+    // 移除镜头描述 [...], 避免干扰
+    const cleanText = text.replace(/\[镜头[^\]]*\]/g, '');
+
+    // 模式1: xx对xx(情绪)说[：:]
+    // 例: 婆婆对大儿子(偏心)说：
+    const pattern1 = /([^\s\n、，,。！？]+?)对[^\s\n、，,。！？]+?\([^)]+\)说[：:]/g;
+    let match;
+    while ((match = pattern1.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (speaker && !speakers.includes(speaker)) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(格式1): "${speaker}"`);
+        }
+    }
+
+    // 模式2: xx对xx说[：:]
+    // 例: 晓冉对婆婆说：
+    const pattern2 = /([^\s\n、，,。！？]+?)对[^\s\n、，,。！？]+?说[：:]/g;
+    while ((match = pattern2.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (speaker && !speakers.includes(speaker)) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(格式2): "${speaker}"`);
+        }
+    }
+
+    // 模式3: xx(情绪)说[：:]
+    // 例: 大儿子(生气)说：
+    const pattern3 = /([^\s\n、，,。！？]+?)\([^)]+\)说[：:]/g;
+    while ((match = pattern3.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (speaker && !speakers.includes(speaker)) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(格式3): "${speaker}"`);
+        }
+    }
+
+    // 模式4: xx说[：:] 或 xx说道[：:]
+    // 例: 晓冉说： 或 晓冉说道：
+    const pattern4 = /([^\s\n、，,。！？]+?)(?:说|说道)[：:]/g;
+    while ((match = pattern4.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        // 排除已被其他模式匹配的（包含"对"的）
+        if (speaker && !speakers.includes(speaker) && !speaker.includes('对')) {
+            speakers.push(speaker);
+            log.info(`从对话提取说话人(格式4): "${speaker}"`);
+        }
+    }
+
+    return speakers;
 }
 
 /**
@@ -450,6 +516,7 @@ function matchMaterialsFromPrompt(promptText, materialsFiles) {
     });
 
     // 匹配人物（图片+音频）
+    // 重要规则：只有有台词的人物才匹配音频
     // 人物名称可能包含多个关键词，用顿号分隔，如 "阿俊、助理"
     parsed.characters.forEach(character => {
         log.info(`查找人物素材: "${character}"`);
@@ -481,7 +548,18 @@ function matchMaterialsFromPrompt(promptText, materialsFiles) {
                 log.warn(`✗ 未找到人物图片: ${charName}.png 或 ${charName}.jpg`);
             }
 
-            // 为每个关键词查找音频
+            // 检查该人物是否有台词
+            const isSpeakingCharacter = parsed.speakingCharacters.some(s =>
+                normalizeName(s) === normalizeName(charName)
+            );
+
+            // 只有有台词的人物才匹配音频
+            if (!isSpeakingCharacter) {
+                log.info(`  ${charName} 无台词，跳过音频匹配`);
+                return;
+            }
+
+            // 为有台词的人物查找音频
             const charAudio = materialsFiles.find(f => {
                 const nameWithoutExt = f.name.replace(/\.[^.]+$/i, '');
                 const normalizedFileName = normalizeName(nameWithoutExt);
@@ -495,7 +573,7 @@ function matchMaterialsFromPrompt(promptText, materialsFiles) {
                 // 检查是否已经添加过
                 if (!matchedFiles.find(f => f.path === charAudio.path)) {
                     matchedFiles.push({ ...charAudio, category: 'character_audio' });
-                    log.info(`✓ 匹配到人物音频: ${charName} -> ${charAudio.name}`);
+                    log.info(`✓ 匹配到人物音频(有台词): ${charName} -> ${charAudio.name}`);
                 } else {
                     log.info(`  ${charName} -> ${charAudio.name} (已添加)`);
                 }
