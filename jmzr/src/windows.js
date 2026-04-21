@@ -836,6 +836,9 @@ async function analyzePageStructure(windowId = null) {
 
     log.info('分析页面结构... 目标窗口:', windowId || '主窗口');
 
+    // 先关闭可能的弹窗
+    await autoHandlePopupsForWindow(targetWindow);
+
     const analyzeScript = `
         (function() {
             var info = {};
