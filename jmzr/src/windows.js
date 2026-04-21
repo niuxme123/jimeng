@@ -196,6 +196,9 @@ async function checkAndHandleLoginStatus() {
             auth.saveLoginState({ isLoggedIn: true, username: status.username });
             await auth.saveCookies(jimengWindow);
 
+            // 关闭登录后可能出现的弹窗
+            await autoHandlePopupsForWindow(jimengWindow);
+
             // 登录成功后设置默认参数
             await setDefaultGenerateParams();
         } else {
@@ -1880,7 +1883,10 @@ async function loginWithEmail(email, password) {
                 log.info(`登录状态检查(${loginCheckCount}/${maxChecks}):`, loginStatus);
 
                 if (loginStatus.isLoggedIn) {
-                    log.info('登录成功！开始设置默认参数...');
+                    log.info('登录成功！关闭弹窗并设置默认参数...');
+
+                    // 关闭登录后可能出现的弹窗
+                    await autoHandlePopupsForWindow(targetWindow);
 
                     // 通知主窗口
                     if (mainWindow && !mainWindow.isDestroyed()) {
