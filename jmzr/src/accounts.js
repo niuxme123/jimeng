@@ -326,11 +326,12 @@ function parsePromptText(promptText) {
             .trim();
     };
 
-    // 辅助函数：清理人物名称（去掉括号描述、末尾数字）
+    // 辅助函数：清理人物名称（去掉括号描述、末尾数字、末尾括号）
     const cleanCharacterName = (name) => {
         return name
             .trim()
             .replace(/[（\(][^）\)]*[）\)]/g, '')  // 去掉括号及其内容，如：（朴素憔悴）
+            .replace(/[）\)]+$/, '')  // 去掉末尾的右括号
             .replace(/[0-9]+$/, '')  // 去掉末尾的数字
             .trim();
     };
@@ -370,7 +371,8 @@ function parsePromptText(promptText) {
     // 人物可以有多个，支持顿号、逗号分隔
     // 支持带括号描述的格式：林晓月（朴素憔悴）、王桂兰（刻薄市侩）
     // 人物名后的数字标识会被去掉：苏念1、林峰2 → ["苏念", "林峰"]
-    let characterMatch = promptText.match(/人物[为是：:](.+?)(?=\n|$)/);
+    // 注意：如果人物文本在第一行的括号内，需要特殊处理，如：(场景: xxx 人物: 林晓月、王桂兰)
+    let characterMatch = promptText.match(/人物[为是：:](.+?)(?=\n|\)|$)/);
     if (characterMatch) {
         let characterText = characterMatch[1].trim();
         if (characterText) {
