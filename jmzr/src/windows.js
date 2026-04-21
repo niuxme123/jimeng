@@ -538,9 +538,40 @@ async function autoHandlePopupsForWindow(targetWindow) {
     const popupScript = `
         (function() {
             var handled = false;
+            var actions = [];
 
             try {
-                // 1. 处理用户协议/隐私政策弹窗
+                // 1. 处理 Cookie 同意弹窗（拒绝/仅必要）
+                var cookieButtons = document.querySelectorAll('button, [class*="button"], [class*="btn"], a, [role="button"]');
+                var cookieRejectTexts = [
+                    '拒绝', 'Reject', 'Decline', '拒绝所有', 'Reject All',
+                    '仅必要', '仅使用必要', '仅必要的Cookie', 'Necessary Only',
+                    '不需要', '不要', '否', 'No', '关闭'
+                ];
+                for (var i = 0; i < cookieButtons.length; i++) {
+                    var btn = cookieButtons[i];
+                    var text = (btn.textContent || '').trim();
+                    // 检查是否是 Cookie 拒绝按钮
+                    for (var j = 0; j < cookieRejectTexts.length; j++) {
+                        if (text === cookieRejectTexts[j] || text.indexOf(cookieRejectTexts[j]) >= 0) {
+                            // 确保是 Cookie 相关的弹窗
+                            var container = btn.closest('[class*="cookie"]') ||
+                                           btn.closest('[class*="consent"]') ||
+                                           btn.closest('[class*="gdpr"]') ||
+                                           btn.closest('[class*="privacy"]') ||
+                                           btn.closest('[class*="banner"]');
+                            if (container || text.indexOf('Cookie') >= 0 || text.indexOf('cookie') >= 0) {
+                                btn.click();
+                                actions.push('Cookie拒绝: ' + text);
+                                handled = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (handled) break;
+                }
+
+                // 2. 处理用户协议/隐私政策弹窗
                 var agreeButtons = document.querySelectorAll('button, [class*="button"], [class*="btn"]');
                 for (var i = 0; i < agreeButtons.length; i++) {
                     var btn = agreeButtons[i];
@@ -548,15 +579,16 @@ async function autoHandlePopupsForWindow(targetWindow) {
                     if (text === '同意' || text === '确认' || text === '接受' ||
                         text === '我同意' || text === '我知道了' || text === '确定' ||
                         text.indexOf('同意并继续') >= 0 || text.indexOf('同意并') >= 0 ||
-                        text === 'Agree' || text === 'Accept' || text === 'OK') {
+                        text === 'Agree' || text === 'Accept' || text === 'OK' ||
+                        text === '是' || text === 'Yes' || text === '继续') {
                         btn.click();
-                        console.log('[自动处理] 已点击同意按钮:', text);
+                        actions.push('同意按钮: ' + text);
                         handled = true;
                         break;
                     }
                 }
 
-                // 2. 处理复选框
+                // 3. 处理复选框
                 var checkboxes = document.querySelectorAll('input[type="checkbox"]');
                 for (var j = 0; j < checkboxes.length; j++) {
                     var cb = checkboxes[j];
@@ -564,31 +596,77 @@ async function autoHandlePopupsForWindow(targetWindow) {
                         var label = cb.closest('label') || cb.parentElement;
                         var labelText = label ? label.textContent : '';
                         if (labelText.indexOf('协议') >= 0 || labelText.indexOf('同意') >= 0 ||
-                            labelText.indexOf('隐私') >= 0 || labelText.indexOf('条款') >= 0) {
+                            labelText.indexOf('隐私') >= 0 || labelText.indexOf('条款') >= 0 ||
+                            labelText.indexOf('已阅读') >= 0 || labelText.indexOf('已了解') >= 0) {
                             cb.click();
+                            actions.push('复选框勾选');
                             handled = true;
                         }
                     }
                 }
 
-                // 3. 处理关闭按钮
-                var closeButtons = document.querySelectorAll('[class*="close"], [class*="cancel"], [class*="dismiss"]');
+                // 4. 处理关闭按钮（弹窗/模态框）
+                var closeSelectors = [
+                    '[class*="close"]', '[class*="Close"]', '[class*="cancel"]',
+                    '[class*="Cancel"]', '[class*="dismiss"]', '[class*="Dismiss"]',
+                    '[class*="x-btn"]', '[aria-label*="关闭"]', '[aria-label*="close"]',
+                    '[aria-label*="Close"]', 'button[class*="icon-close"]',
+                    '.lv-modal-close', '.modal-close', '.dialog-close'
+                ];
+                var closeButtons = document.querySelectorAll(closeSelectors.join(', '));
                 for (var k = 0; k < closeButtons.length; k++) {
                     var btn = closeButtons[k];
                     var isModalClose = btn.closest('[class*="modal"]') ||
                                          btn.closest('[class*="dialog"]') ||
-                                         btn.closest('[class*="popup"]');
+                                         btn.closest('[class*="popup"]') ||
+                                         btn.closest('[class*="toast"]') ||
+                                         btn.closest('[class*="notice"]') ||
+                                         btn.closest('[class*="banner"]');
                     if (isModalClose) {
                         btn.click();
+                        actions.push('关闭弹窗');
                         handled = true;
                     }
                 }
+
+                // 5. 处理提示弹窗（如"暂不支持"、"功能更新"等）
+                var tipButtons = document.querySelectorAll('button, [class*="button"], [class*="btn"]');
+                for (var i = 0; i < tipButtons.length; i++) {
+                    var btn = tipButtons[i];
+                    var text = (btn.textContent || '').trim();
+                    if (text === '知道了' || text === '好的' || text === '暂不' ||
+                        text === '以后再说' || text === '不再提示' || text === '不再显示' ||
+                        text === 'Not now' || text === 'Later' || text === 'Skip') {
+                        btn.click();
+                        actions.push('提示确认: ' + text);
+                        handled = true;
+                        break;
+                    }
+                }
+
+                // 6. 处理引导/新手提示的跳过按钮
+                var skipButtons = document.querySelectorAll('[class*="skip"], [class*="Skip"], [class*="skip-btn"]');
+                for (var i = 0; i < skipButtons.length; i++) {
+                    skipButtons[i].click();
+                    actions.push('跳过引导');
+                    handled = true;
+                }
+
+                // 7. 点击页面空白处关闭一些下拉菜单/提示
+                if (!handled) {
+                    document.body.click();
+                }
+
             } catch (e) {
                 console.error('[自动处理] 错误:', e.message);
             }
 
+            if (actions.length > 0) {
+                console.log('[自动处理] 执行的操作:', actions.join(', '));
+            }
+
             // 返回 JSON 字符串
-            return JSON.stringify({ handled: handled });
+            return JSON.stringify({ handled: handled, actions: actions });
         })();
     `;
 
@@ -596,9 +674,9 @@ async function autoHandlePopupsForWindow(targetWindow) {
         const jsonStr = await targetWindow.webContents.executeJavaScript(popupScript);
         const result = JSON.parse(jsonStr);
         if (result.handled) {
-            log.info('已自动处理弹窗');
+            log.info('已自动处理弹窗:', result.actions ? result.actions.join(', ') : '');
             if (mainWindow && !mainWindow.isDestroyed()) {
-                mainWindow.webContents.send('popup-handled', { handled: true });
+                mainWindow.webContents.send('popup-handled', { handled: true, actions: result.actions });
             }
         }
     } catch (error) {
