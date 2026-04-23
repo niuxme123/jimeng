@@ -536,6 +536,105 @@ function extractSpeakingCharacters(text) {
         }
     }
 
+    // ========== 新增格式兼容 ==========
+
+    // 格式9: A台词[：:] / A 台词[：:] / A的台词[：:]
+    const pattern9 = /([^\s\n、，,。！？]+?)\s*(?:的)?台词[：:]/g;
+    while ((match = pattern9.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (!speaker.includes('对') && !speaker.includes(')') && !speaker.includes('(')) {
+            addSpeaker(speaker);
+            log.info(`从对话提取说话人(A台词): "${speaker}"`);
+        }
+    }
+
+    // 格式10: A道[：:] / A问道[：:] / A答道[：:] / A回道[：:]
+    const pattern10 = /([^\s\n、，,。！？]+?)\s*(?:问|答|回)?道[：:]/g;
+    while ((match = pattern10.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (!speaker.includes('对') && !speaker.includes(')') && !speaker.includes('(')) {
+            addSpeaker(speaker);
+            log.info(`从对话提取说话人(A道/问道/答道): "${speaker}"`);
+        }
+    }
+
+    // 格式11: A接话[：:] / A插话[：:] / A开口[：:]
+    const pattern11 = /([^\s\n、，,。！？]+?)\s*(?:接话|插话|开口)[：:]/g;
+    while ((match = pattern11.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (!speaker.includes('对') && !speaker.includes(')') && !speaker.includes('(')) {
+            addSpeaker(speaker);
+            log.info(`从对话提取说话人(A接话/插话/开口): "${speaker}"`);
+        }
+    }
+
+    // 格式12: A低声说[：:] / A高声说[：:] / A小声说[：:]
+    const pattern12 = /([^\s\n、，,。！？]+?)\s*(?:低声|高声|小声)(?:地)?说[：:]/g;
+    while ((match = pattern12.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (!speaker.includes('对') && !speaker.includes(')') && !speaker.includes('(')) {
+            addSpeaker(speaker);
+            log.info(`从对话提取说话人(A低声/高声说): "${speaker}"`);
+        }
+    }
+
+    // 格式13: A自语[：:] / A喃喃[：:]
+    const pattern13 = /([^\s\n、，,。！？]+?)\s*(?:自语|喃喃)[：:]/g;
+    while ((match = pattern13.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        if (!speaker.includes('对') && !speaker.includes(')') && !speaker.includes('(')) {
+            addSpeaker(speaker);
+            log.info(`从对话提取说话人(A自语/喃喃): "${speaker}"`);
+        }
+    }
+
+    // 格式14: A对B台词[：:]
+    const pattern14 = /([^\s\n、，,。！？]+?)\s*对\s+[^\s\n、，,。！？]+?\s*台词[：:]/g;
+    while ((match = pattern14.exec(cleanText)) !== null) {
+        addSpeaker(match[1]);
+        log.info(`从对话提取说话人(A对B台词): "${match[1].trim()}"`);
+    }
+
+    // 格式15: A对B道[：:] / A对B问道[：:] / A对B答道[：:]
+    const pattern15 = /([^\s\n、，,。！？]+?)\s*对\s+[^\s\n、，,。！？]+?\s*(?:问|答|回)?道[：:]/g;
+    while ((match = pattern15.exec(cleanText)) !== null) {
+        addSpeaker(match[1]);
+        log.info(`从对话提取说话人(A对B道): "${match[1].trim()}"`);
+    }
+
+    // 格式16: A对B低声说[：:] / A对B高声说[：:]
+    const pattern16 = /([^\s\n、，,。！？]+?)\s*对\s+[^\s\n、，,。！？]+?\s*(?:低声|高声|小声)(?:地)?说[：:]/g;
+    while ((match = pattern16.exec(cleanText)) !== null) {
+        addSpeaker(match[1]);
+        log.info(`从对话提取说话人(A对B低声/高声说): "${match[1].trim()}"`);
+    }
+
+    // 格式17: A[：:] (剧本格式 - 最后匹配，因为最简单)
+    // 注意：需要排除一些常见的非对话关键词，如"场景"、"人物"、"镜头"等
+    const pattern17 = /([^\s\n、，,。！？]+?)[：:]/g;
+    const excludeKeywords = ['场景', '人物', '道具', '镜头', '生成', '匹配', '更新', '设置', '格式', '注意', '说明', '示例', '版本', '日期', '作者', '来源', '参考', '提示', '警告', '错误', '信息', '标题', '正文', '内容', '描述', '简介', '概述', '总结', '附件', '图片', '视频', '音频', '文件', '类型', '状态', '结果', '原因', '解决', '方案', '步骤', '方法', '技巧', '要点', '重点', '难点', '关键', '核心', '基础', '高级', '初级', '中级', '上', '下', '左', '右', '前', '后', '东', '西', '南', '北', '一', '二', '三', '四', '五', '六', '七', '八', '九', '十', '第'];
+    while ((match = pattern17.exec(cleanText)) !== null) {
+        const speaker = match[1].trim();
+        // 排除条件：包含特定关键词、太短、已被匹配
+        if (speaker.length >= 2 &&
+            !speaker.includes('对') &&
+            !speaker.includes(')') &&
+            !speaker.includes('(') &&
+            !speaker.includes('说') &&
+            !speaker.includes('道') &&
+            !speaker.includes('台词') &&
+            !excludeKeywords.some(kw => speaker.includes(kw)) &&
+            !speakers.includes(speaker)) {
+            // 额外检查：这个冒号后面应该有对话内容（不是单独一行的标签）
+            const afterColon = cleanText.substring(match.index + match[0].length, match.index + match[0].length + 50);
+            // 如果冒号后面是换行或空白，可能是标签而不是对话
+            if (afterColon.trim().length > 0 && !afterColon.match(/^\s*$/)) {
+                addSpeaker(speaker);
+                log.info(`从对话提取说话人(A[冒号]剧本格式): "${speaker}"`);
+            }
+        }
+    }
+
     return speakers;
 }
 
