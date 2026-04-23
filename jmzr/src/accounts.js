@@ -358,12 +358,59 @@ function parsePromptText(promptText) {
     }
 
     // 提取道具：支持多种格式
-    let propMatch = promptText.match(/道具[为是：:]([^）)\（(，。,\n]+)/);
+    // 支持多道具列表（顿号、逗号分隔）
+    // 支持带括号描述：红色印泥盒（娟子持续持有）
+    let propMatch = promptText.match(/道具[为是追踪：:](.+?)(?=\n|\)|$)/);
     if (propMatch) {
-        const prop = cleanText(propMatch[1]);
-        if (prop) {
-            result.props.push(prop);
-            log.info(`解析到道具: "${prop}"`);
+        let propText = propMatch[1].trim();
+        if (propText) {
+            log.info(`原始道具文本: "${propText}"`);
+
+            // 辅助函数：清理道具名称（去掉括号描述）
+            const cleanPropName = (name) => {
+                return name
+                    .trim()
+                    .replace(/[（\(][^）\)]*[）\)]/g, '')  // 去掉括号及其内容
+                    .trim();
+            };
+
+            // 智能分隔：按顿号、逗号分隔，但忽略括号内的分隔符
+            const props = [];
+            let current = '';
+            let parenDepth = 0;
+
+            for (let i = 0; i < propText.length; i++) {
+                const char = propText[i];
+                if (char === '（' || char === '(') {
+                    parenDepth++;
+                    current += char;
+                } else if (char === '）' || char === ')') {
+                    parenDepth--;
+                    current += char;
+                } else if ((char === '、' || char === '，' || char === ',') && parenDepth === 0) {
+                    // 分隔符且不在括号内
+                    if (current.trim()) {
+                        const cleanedProp = cleanPropName(current);
+                        if (cleanedProp && !props.includes(cleanedProp)) {
+                            props.push(cleanedProp);
+                            log.info(`解析到道具: "${cleanedProp}"`);
+                        }
+                    }
+                    current = '';
+                } else {
+                    current += char;
+                }
+            }
+            // 添加最后一个
+            if (current.trim()) {
+                const cleanedProp = cleanPropName(current);
+                if (cleanedProp && !props.includes(cleanedProp)) {
+                    props.push(cleanedProp);
+                    log.info(`解析到道具: "${cleanedProp}"`);
+                }
+            }
+
+            result.props = props;
         }
     }
 
